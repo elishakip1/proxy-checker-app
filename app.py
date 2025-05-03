@@ -1,21 +1,18 @@
 import os
-# Add this check in app.py right after load_dotenv()
-if not os.getenv('SUPABASE_URL') or not os.getenv('SUPABASE_KEY'):
-    raise ValueError("Missing Supabase credentials - check environment variables")
-from flask import Flask, request, render_template, send_from_directory, jsonify
 import requests
+from flask import Flask, request, render_template, send_from_directory, jsonify
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg')  # Set backend before importing pyplot
 import matplotlib.pyplot as plt
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import logging
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 
-# Initialize Flask
+# Initialize Flask app
 app = Flask(__name__)
 
 # Load environment variables
@@ -28,11 +25,29 @@ log_handler.setFormatter(formatter)
 app.logger.addHandler(log_handler)
 app.logger.setLevel(logging.INFO)
 
-# Initialize Supabase
-supabase: Client = create_client(
-    os.getenv('SUPABASE_URL'),
-    os.getenv('SUPABASE_KEY')
-)
+# Initialize Supabase with error handling
+try:
+    supabase_url = os.environ['SUPABASE_URL']
+    supabase_key = os.environ['SUPABASE_KEY']
+    
+    supabase: Client = create_client(
+        supabase_url,
+        supabase_key,
+        options={
+            'schema': 'public',
+            'auto_refresh_token': False,
+            'persist_session': False
+        }
+    )
+    
+    # Test connection
+    supabase.table('used_ips').select("*").limit(1).execute()
+    app.logger.info("Successfully connected to Supabase")
+    
+except KeyError as e:
+    raise ValueError(f"Missing required environment variable: {e}")
+except Exception as e:
+    raise ConnectionError(f"Failed to initialize Supabase client: {str(e)}")
 
 # Constants
 MAX_WORKERS = 50
@@ -46,7 +61,9 @@ def get_ip_from_proxy(proxy):
             "http": f"http://{user}:{pw}@{host}:{port}",
             "https": f"http://{user}:{pw}@{host}:{port}",
         }
-        response = requests.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT)
+        response = requests.get("https://api.ipify.org", 
+                              proxies=proxies, 
+                              timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -70,25 +87,12 @@ def track_used_ip(proxy):
     try:
         ip = get_ip_from_proxy(proxy)
         if ip:
-            # Check if IP exists
-            existing = supabase.table('used_ips')\
-                .select('ip')\
-                .eq('ip', ip)\
-                .execute()
-            
-            if not existing.data:
-                # Insert new IP
-                supabase.table('used_ips').insert({
-                    "ip": ip,
-                    "proxy": proxy,
-                    "last_used": datetime.now().isoformat()
-                }).execute()
-            else:
-                # Update last_used
-                supabase.table('used_ips')\
-                    .update({"last_used": datetime.now().isoformat()})\
-                    .eq('ip', ip)\
-                    .execute()
+            # Upsert record (update if exists, insert if new)
+            supabase.table('used_ips').upsert({
+                "ip": ip,
+                "proxy": proxy,
+                "last_used": datetime.now().isoformat()
+            }).execute()
             return ip
     except Exception as e:
         app.logger.error(f"Error tracking IP: {e}")
@@ -217,7 +221,8 @@ def admin():
         daily_data = {log['date']: log['count'] for log in logs.data}
         if daily_data:
             plt.figure(figsize=(10, 4))
-            plt.plot(list(daily_data.keys()), list(daily_data.values()), marker="o", color="green")
+            plt.plot(list(daily_data.keys()), list(daily_data.values()), 
+                    marker="o", color="green")
             plt.title("Good Proxies per Day")
             plt.xlabel("Date")
             plt.ylabel("Count")
