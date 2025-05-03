@@ -4,9 +4,8 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import datetime
+from datetime import datetime, date  # Updated import
 import matplotlib.pyplot as plt
-from datetime import datetime
 
 app = Flask(__name__)
 
@@ -24,7 +23,7 @@ class UsedIP(db.Model):
 
 class ProxyLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    date = db.Column(db.Date, nullable=False)
+    date = db.Column(db.Date, nullable=False, default=date.today)  # Fixed datetime usage
     count = db.Column(db.Integer, nullable=False)
 
 # Constants
@@ -124,11 +123,7 @@ def index():
             if results:
                 good_count = len([r for r in results if not r['used']])
                 if good_count > 0:
-                    # Log successful check
-                    new_log = ProxyLog(
-                        date=datetime.date.today(),
-                        count=good_count
-                    )
+                    new_log = ProxyLog(count=good_count)  # date auto-populated by default
                     db.session.add(new_log)
                     db.session.commit()
 
