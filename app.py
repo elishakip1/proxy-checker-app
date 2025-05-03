@@ -1,5 +1,4 @@
 from flask import Flask, request, render_template
-from flask_socketio import SocketIO, emit
 import os
 import time
 import requests
@@ -7,7 +6,6 @@ from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
-socketio = SocketIO(app)
 
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 MAX_WORKERS = 50
@@ -64,7 +62,41 @@ def triple_check_proxy(proxy_line):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    return render_template("index.html")
+    results = []
+    message = ""
+    if request.method == "POST":
+        proxies = []
+
+        if 'proxyfile' in request.files and request.files['proxyfile'].filename:
+            file = request.files['proxyfile']
+            proxies = file.read().decode("utf-8").strip().splitlines()
+            message = "Checking uploaded proxy file..."
+        elif 'proxytext' in request.form:
+            proxytext = request.form.get("proxytext", "")
+            proxies = proxytext.strip().splitlines()
+            message = "Checking pasted proxies..."
+
+        proxies = list(set(p.strip() for p in proxies if p.strip()))
+
+        if proxies:
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = [executor.submit(triple_check_proxy, proxy) for proxy in proxies]
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        results.append(result)
+
+            if results:
+                with open(GOOD_PROXIES_FILE, "w") as out:
+                    for proxy in results:
+                        out.write(proxy + "\n")
+                message = f"✅ {len(results)} good proxies found."
+            else:
+                message = "⚠️ No good proxies found."
+        else:
+            message = "⚠️ No proxies provided."
+
+    return render_template("index.html", results=results, message=message)
 
 
 @app.route("/paste", methods=["GET", "POST"])
@@ -72,38 +104,5 @@ def paste():
     return index()
 
 
-@socketio.on('check_proxies')
-def handle_check_proxies(data):
-    proxies = data['proxies']
-    results = []
-    message = "Checking proxies..."
-    
-    # Filter out empty lines and duplicates
-    proxies = list(set(p.strip() for p in proxies if p.strip()))
-
-    if proxies:
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = [executor.submit(triple_check_proxy, proxy) for proxy in proxies]
-            for future in as_completed(futures):
-                result = future.result()
-                if result:
-                    results.append(result)
-                # Emit progress update
-                emit('update_progress', {'message': f"Checked {len(results)} proxies"})
-            
-        if results:
-            with open(GOOD_PROXIES_FILE, "w") as out:
-                for proxy in results:
-                    out.write(proxy + "\n")
-            message = f"✅ {len(results)} good proxies found."
-        else:
-            message = "⚠️ No good proxies found."
-    else:
-        message = "⚠️ No proxies provided."
-    
-    # Send final results
-    emit('final_results', {'results': results, 'message': message})
-
-
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
