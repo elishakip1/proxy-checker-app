@@ -76,9 +76,14 @@
         function copyToClipboard(elementId) {
             var text = document.getElementById(elementId).innerText;
             navigator.clipboard.writeText(text).then(function() {
-                alert("Copied: " + text);
-            }, function(err) {
-                alert("Failed to copy");
+                const target = document.getElementById(elementId);
+                if (!target.parentElement.querySelector('.text-success')) {
+                    let copiedMsg = document.createElement("span");
+                    copiedMsg.className = "text-success ms-2 small";
+                    copiedMsg.innerText = "✔ Copied!";
+                    copiedMsg.style.fontWeight = "bold";
+                    target.parentElement.appendChild(copiedMsg);
+                }
             });
         }
 
@@ -86,7 +91,7 @@
         // Auto-redirect to home after 5 minutes
         setTimeout(function() {
             window.location.href = "/";
-        }, 300000);
+        }, 300000);  // 5 minutes
         {% endif %}
     </script>
 
