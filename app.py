@@ -1,118 +1,98 @@
+# Standard Library Imports
 import os
-import requests
-# At the top with other imports
 import logging
 from logging.handlers import RotatingFileHandler
-
-# In your app setup code:
-app = Flask(__name__)
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-log_handler = RotatingFileHandler(
-    'app.log', 
-    maxBytes=1024*1024,  # 1MB
-    backupCount=5,       # Keep 5 backups
-    encoding='utf-8'
-)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-log_handler.setFormatter(formatter)
-app.logger.addHandler(log_handler)
-from flask import Flask, request, render_template, send_from_directory, jsonify
-from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
-import matplotlib
-matplotlib.use('Agg')  # Set backend before importing pyplot
-import matplotlib.pyplot as plt
-from supabase import create_client, Client
-from dotenv import load_dotenv
-import logging
-import logging
-from logging.handlers import RotatingFileHandler
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Configure logging
-log_handler = RotatingFileHandler('app.log', maxBytes=1024*1024, backupCount=5)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-log_handler.setFormatter(formatter)
-app.logger.addHandler(log_handler)
-app.logger.setLevel(logging.INFO)
-# Initialize Flask app
+# Third-Party Imports
+from flask import Flask, request, render_template, send_from_directory, jsonify
+from supabase import create_client, Client
+import requests
+from bs4 import BeautifulSoup
+import matplotlib
+matplotlib.use('Agg')  # Set non-interactive backend
+import matplotlib.pyplot as plt
+from dotenv import load_dotenv
+
+# Initialize Flask Application
 app = Flask(__name__)
 
-# Load environment variables
+# Load Environment Variables
 load_dotenv()
 
-# Configure logging
-log_handler = ConcurrentRotatingFileHandler('app.log', 'a', 1024*1024, 5)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-log_handler.setFormatter(formatter)
+# Configure Logging
+logging.basicConfig(level=logging.INFO)
+log_handler = RotatingFileHandler(
+    'app.log',
+    maxBytes=1_048_576,  # 1MB
+    backupCount=5,
+    encoding='utf-8'
+)
+log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 app.logger.addHandler(log_handler)
-app.logger.setLevel(logging.INFO)
 
-# Initialize Supabase with error handling
+# Constants
+MAX_WORKERS = 50
+REQUEST_TIMEOUT = 4  # seconds
+
+# Initialize Supabase Client
 try:
-    supabase_url = os.environ['SUPABASE_URL']
-    supabase_key = os.environ['SUPABASE_KEY']
-    
     supabase: Client = create_client(
-        supabase_url,
-        supabase_key,
+        os.environ['SUPABASE_URL'],
+        os.environ['SUPABASE_KEY'],
         options={
             'schema': 'public',
             'auto_refresh_token': False,
             'persist_session': False
         }
     )
-    
-    # Test connection
-    supabase.table('used_ips').select("*").limit(1).execute()
-    app.logger.info("Successfully connected to Supabase")
-    
+    app.logger.info("Supabase client initialized successfully")
 except KeyError as e:
-    raise ValueError(f"Missing required environment variable: {e}")
+    app.logger.error(f"Missing environment variable: {e}")
+    raise
 except Exception as e:
-    raise ConnectionError(f"Failed to initialize Supabase client: {str(e)}")
-
-# Constants
-MAX_WORKERS = 50
-REQUEST_TIMEOUT = 4  # seconds
+    app.logger.error(f"Supabase initialization failed: {e}")
+    raise
 
 # Helper Functions
 def get_ip_from_proxy(proxy):
     try:
-        host, port, user, pw = proxy.strip().split(":")
+        host, port, user, pw = proxy.strip().split(':')
         proxies = {
             "http": f"http://{user}:{pw}@{host}:{port}",
-            "https": f"http://{user}:{pw}@{host}:{port}",
+            "https": f"http://{user}:{pw}@{host}:{port}"
         }
-        response = requests.get("https://api.ipify.org", 
-                              proxies=proxies, 
-                              timeout=REQUEST_TIMEOUT)
+        response = requests.get(
+            "https://api.ipify.org",
+            proxies=proxies,
+            timeout=REQUEST_TIMEOUT
+        )
         response.raise_for_status()
         return response.text
     except Exception as e:
-        app.logger.error(f"Failed to get IP from proxy {proxy}: {e}")
+        app.logger.error(f"Proxy IP fetch failed: {e}")
         return None
 
 def get_fraud_score(ip):
     try:
-        url = f"https://scamalytics.com/ip/{ip}"
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
+        response = requests.get(
+            f"https://scamalytics.com/ip/{ip}",
+            timeout=REQUEST_TIMEOUT
+        )
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             score_div = soup.find('div', class_='score')
             if score_div and "Fraud Score:" in score_div.text:
                 return int(score_div.text.strip().split(":")[1].strip())
     except Exception as e:
-        app.logger.error(f"Error checking Scamalytics for {ip}: {e}")
+        app.logger.error(f"Fraud score check failed: {e}")
     return None
 
 def track_used_ip(proxy):
     try:
         ip = get_ip_from_proxy(proxy)
         if ip:
-            # Upsert record (update if exists, insert if new)
             supabase.table('used_ips').upsert({
                 "ip": ip,
                 "proxy": proxy,
@@ -120,7 +100,7 @@ def track_used_ip(proxy):
             }).execute()
             return ip
     except Exception as e:
-        app.logger.error(f"Error tracking IP: {e}")
+        app.logger.error(f"IP tracking failed: {e}")
     return None
 
 def is_ip_used(proxy):
@@ -133,7 +113,7 @@ def is_ip_used(proxy):
                 .execute()
             return len(result.data) > 0
     except Exception as e:
-        app.logger.error(f"Error checking IP usage: {e}")
+        app.logger.error(f"IP usage check failed: {e}")
     return False
 
 def single_check_proxy(proxy_line):
@@ -146,7 +126,7 @@ def single_check_proxy(proxy_line):
         return proxy_line
     return None
 
-# Routes
+# Application Routes
 @app.route("/", methods=["GET", "POST"])
 def index():
     results = []
@@ -156,40 +136,37 @@ def index():
         proxies = []
 
         if 'proxyfile' in request.files and request.files['proxyfile'].filename:
-            file = request.files['proxyfile']
             try:
-                proxies = file.read().decode("utf-8").strip().splitlines()
+                proxies = request.files['proxyfile'].read().decode().splitlines()
                 message = "Checking uploaded proxy file..."
             except Exception as e:
-                message = f"⚠️ Error reading file: {str(e)}"
+                message = f"⚠️ File error: {str(e)}"
         elif 'proxytext' in request.form:
-            proxytext = request.form.get("proxytext", "")
-            proxies = proxytext.strip().splitlines()
+            proxies = request.form.get("proxytext", "").splitlines()
             message = "Checking pasted proxies..."
 
-        proxies = list(set(p.strip() for p in proxies if p.strip()))
+        proxies = list({p.strip() for p in proxies if p.strip()})
 
         if proxies:
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [executor.submit(single_check_proxy, proxy) for proxy in proxies]
+                futures = [executor.submit(single_check_proxy, p) for p in proxies]
                 for future in as_completed(futures):
-                    result = future.result()
-                    if result:
+                    if (result := future.result()):
                         results.append({
                             "proxy": result,
                             "used": is_ip_used(result)
                         })
 
             if results:
-                good_count = len([r for r in results if not r['used']])
-                if good_count > 0:
+                good_count = sum(1 for r in results if not r['used'])
+                if good_count:
                     try:
                         supabase.table('proxy_logs').insert({
                             "date": date.today().isoformat(),
                             "count": good_count
                         }).execute()
                     except Exception as e:
-                        app.logger.error(f"Error saving log: {e}")
+                        app.logger.error(f"Log save failed: {e}")
 
                 message = f"✅ {good_count} good proxies found ({len(results) - good_count} used)."
             else:
@@ -201,11 +178,11 @@ def index():
 
 @app.route("/track-used", methods=["POST"])
 def track_used():
-    data = request.get_json()
-    if data and "proxy" in data:
-        track_used_ip(data["proxy"])
-        return jsonify({"status": "success"})
-    return jsonify({"status": "error"}), 400
+    if not (data := request.get_json()) or "proxy" not in data:
+        return jsonify({"status": "error"}), 400
+    
+    track_used_ip(data["proxy"])
+    return jsonify({"status": "success"})
 
 @app.route("/clear-used-ips", methods=["POST"])
 def clear_used_ips():
@@ -213,48 +190,43 @@ def clear_used_ips():
         supabase.table('used_ips').delete().neq('id', 0).execute()
         return jsonify({
             "status": "success",
-            "message": "All used IP records cleared successfully"
+            "message": "Used IPs cleared"
         })
     except Exception as e:
         return jsonify({
             "status": "error",
-            "message": f"Failed to clear used IPs: {str(e)}"
+            "message": str(e)
         }), 500
 
 @app.route("/admin")
 def admin():
     try:
-        # Get stats
         logs = supabase.table('proxy_logs')\
             .select('*')\
             .order('date')\
             .execute()
         
-        used_ips = supabase.table('used_ips')\
-            .select('count', count=True)\
-            .execute()
-        
-        total_good = supabase.rpc('sum_logs').execute()
-
         stats = {
             "total_checks": len(logs.data),
-            "total_good": total_good.data[0]['sum'] if total_good.data else 0,
-            "used_ips": used_ips.count
+            "total_good": supabase.rpc('sum_logs').execute().data[0]['sum'] or 0,
+            "used_ips": supabase.table('used_ips')
+                         .select('count', count=True)
+                         .execute().count
         }
 
-        # Generate graph
-        daily_data = {log['date']: log['count'] for log in logs.data}
-        if daily_data:
+        if logs.data:
+            dates = [log['date'] for log in logs.data]
+            counts = [log['count'] for log in logs.data]
+            
             plt.figure(figsize=(10, 4))
-            plt.plot(list(daily_data.keys()), list(daily_data.values()), 
-                    marker="o", color="green")
-            plt.title("Good Proxies per Day")
+            plt.plot(dates, counts, 'go-')
+            plt.title("Daily Good Proxies")
             plt.xlabel("Date")
             plt.ylabel("Count")
             plt.xticks(rotation=45)
             plt.tight_layout()
-            if not os.path.exists("static"):
-                os.makedirs("static")
+            
+            os.makedirs("static", exist_ok=True)
             plt.savefig("static/proxy_stats.png")
             plt.close()
 
@@ -262,14 +234,14 @@ def admin():
             "admin.html",
             logs=[f"{log['date']},{log['count']} proxies" for log in logs.data],
             stats=stats,
-            graph_url="/static/proxy_stats.png"
+            graph_url="/static/proxy_stats.png" if logs.data else None
         )
     except Exception as e:
         app.logger.error(f"Admin error: {e}")
         return render_template("admin.html", logs=[], stats={}, graph_url=None)
 
 @app.route('/static/<path:path>')
-def send_static(path):
+def serve_static(path):
     return send_from_directory('static', path)
 
 if __name__ == "__main__":
