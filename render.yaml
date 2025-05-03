@@ -1,21 +1,8 @@
 services:
   - type: web
     name: proxy-checker
-    runtime: python
-    buildCommand: |
-      pip install --upgrade pip
-      pip install -r requirements.txt
-      python -c "from app import db; db.create_all()"
-    startCommand: gunicorn app:app
     envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: proxy-checker-db
-          property: connectionString
-    plan: free
-
-databases:
-  - name: proxy-checker-db
-    plan: free
-    ipAllowList:
-      - 0.0.0.0/0
+      - key: SUPABASE_URL
+        sync: false  # This means you'll set it manually
+      - key: SUPABASE_KEY
+        sync: false
