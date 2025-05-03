@@ -1,4 +1,7 @@
 import os
+# Add this check in app.py right after load_dotenv()
+if not os.getenv('SUPABASE_URL') or not os.getenv('SUPABASE_KEY'):
+    raise ValueError("Missing Supabase credentials - check environment variables")
 from flask import Flask, request, render_template, send_from_directory, jsonify
 import requests
 from bs4 import BeautifulSoup
