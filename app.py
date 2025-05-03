@@ -1,5 +1,9 @@
 from flask import Flask, request, render_template, send_from_directory, jsonify
 from flask_sqlalchemy import SQLAlchemy
+# Add this at the very top of app.py before other imports
+import matplotlib
+matplotlib.use('Agg')  # Set the backend before importing pyplot
+import matplotlib.pyplot as plt
 import os
 import requests
 from bs4 import BeautifulSoup
