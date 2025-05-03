@@ -1,8 +1,14 @@
 services:
   - type: web
     name: proxy-checker
+    runtime: python
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: gunicorn app:app
     envVars:
       - key: SUPABASE_URL
-        sync: false  # This means you'll set it manually
+        sync: false
       - key: SUPABASE_KEY
         sync: false
+    plan: free

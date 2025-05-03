@@ -3,8 +3,7 @@ requests==2.31.0
 beautifulsoup4==4.12.2
 supabase==2.3.1
 python-dotenv==1.0.0
-concurrent-log-handler==0.9.24
 matplotlib==3.8.0
 numpy==1.26.0
-apscheduler==3.10.1
 gunicorn==20.1.0
+httpx==0.25.0  # Important for Supabase compatibility
