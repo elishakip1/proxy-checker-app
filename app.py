@@ -1,21 +1,37 @@
 from flask import Flask, request, render_template, send_from_directory, jsonify
+from flask_sqlalchemy import SQLAlchemy
 import os
-import time
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 app = Flask(__name__)
 
-# File paths
-GOOD_PROXIES_FILE = "zero_score_proxies.txt"
-PROXY_LOG_FILE = "proxy_log.txt"
-USED_IPS_FILE = "used_ips.txt"
+# Database configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///local.db').replace('postgres://', 'postgresql://')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+# Models
+class UsedIP(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    ip = db.Column(db.String(50), nullable=False)
+    proxy = db.Column(db.String(200), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class ProxyLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    date = db.Column(db.Date, nullable=False)
+    count = db.Column(db.Integer, nullable=False)
+
+# Constants
 MAX_WORKERS = 50
 REQUEST_TIMEOUT = 4  # seconds
 
+# Helper functions
 def get_ip_from_proxy(proxy):
     try:
         host, port, user, pw = proxy.strip().split(":")
@@ -46,26 +62,23 @@ def get_fraud_score(ip):
 def track_used_ip(proxy):
     try:
         ip = get_ip_from_proxy(proxy)
-        if ip:
-            with open(USED_IPS_FILE, "a") as f:
-                f.write(f"{ip},{proxy}\n")
+        if ip and not UsedIP.query.filter_by(ip=ip).first():
+            new_ip = UsedIP(ip=ip, proxy=proxy)
+            db.session.add(new_ip)
+            db.session.commit()
             return ip
     except Exception as e:
         print(f"Error tracking IP: {e}")
+        db.session.rollback()
     return None
 
 def is_ip_used(proxy):
     try:
         ip = get_ip_from_proxy(proxy)
-        if ip and os.path.exists(USED_IPS_FILE):
-            with open(USED_IPS_FILE, "r") as f:
-                for line in f:
-                    stored_ip, _ = line.strip().split(",", 1)
-                    if stored_ip == ip:
-                        return True
-    except:
-        pass
-    return False
+        return ip and bool(UsedIP.query.filter_by(ip=ip).first())
+    except Exception as e:
+        print(f"Error checking IP usage: {e}")
+        return False
 
 def single_check_proxy(proxy_line):
     ip = get_ip_from_proxy(proxy_line)
@@ -77,15 +90,11 @@ def single_check_proxy(proxy_line):
         return proxy_line
     return None
 
+# Routes
 @app.route("/", methods=["GET", "POST"])
 def index():
     results = []
     message = ""
-    used_proxies = set()
-    
-    if os.path.exists(USED_IPS_FILE):
-        with open(USED_IPS_FILE, "r") as f:
-            used_proxies = {line.strip().split(",", 1)[1] for line in f if line.strip()}
     
     if request.method == "POST":
         proxies = []
@@ -109,19 +118,21 @@ def index():
                     if result:
                         results.append({
                             "proxy": result,
-                            "used": result in used_proxies or is_ip_used(result)
+                            "used": is_ip_used(result)
                         })
 
             if results:
-                with open(GOOD_PROXIES_FILE, "w") as out:
-                    for item in results:
-                        if not item["used"]:
-                            out.write(item["proxy"] + "\n")
+                good_count = len([r for r in results if not r['used']])
+                if good_count > 0:
+                    # Log successful check
+                    new_log = ProxyLog(
+                        date=datetime.date.today(),
+                        count=good_count
+                    )
+                    db.session.add(new_log)
+                    db.session.commit()
 
-                with open(PROXY_LOG_FILE, "a") as log:
-                    log.write(f"{datetime.date.today()},{len([r for r in results if not r['used']])} proxies\n")
-
-                message = f"✅ {len([r for r in results if not r['used']])} good proxies found ({len([r for r in results if r['used']])} used)."
+                message = f"✅ {good_count} good proxies found ({len(results) - good_count} used)."
             else:
                 message = "⚠️ No good proxies found."
         else:
@@ -140,17 +151,14 @@ def track_used():
 @app.route("/clear-used-ips", methods=["POST"])
 def clear_used_ips():
     try:
-        if os.path.exists(USED_IPS_FILE):
-            os.remove(USED_IPS_FILE)
-            return jsonify({
-                "status": "success",
-                "message": "All used IP records have been cleared successfully"
-            })
+        UsedIP.query.delete()
+        db.session.commit()
         return jsonify({
             "status": "success",
-            "message": "No used IP records to clear"
+            "message": "All used IP records cleared successfully"
         })
     except Exception as e:
+        db.session.rollback()
         return jsonify({
             "status": "error",
             "message": f"Failed to clear used IPs: {str(e)}"
@@ -158,32 +166,16 @@ def clear_used_ips():
 
 @app.route("/admin")
 def admin():
-    stats = {}
-    logs = []
-    daily_data = {}
-    used_ips_count = 0
+    stats = {
+        "total_checks": ProxyLog.query.count(),
+        "total_good": db.session.query(db.func.sum(ProxyLog.count)).scalar() or 0,
+        "used_ips": UsedIP.query.count()
+    }
 
-    # Count used IPs
-    if os.path.exists(USED_IPS_FILE):
-        with open(USED_IPS_FILE, 'r') as f:
-            used_ips_count = sum(1 for line in f if line.strip())
+    # Generate graph data
+    logs = ProxyLog.query.order_by(ProxyLog.date).all()
+    daily_data = {log.date.strftime('%Y-%m-%d'): log.count for log in logs}
 
-    # Load proxy logs
-    if os.path.exists(PROXY_LOG_FILE):
-        with open(PROXY_LOG_FILE) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    logs.append(line)
-                    date_str, count_str = line.split(",")
-                    count = int(count_str.split()[0])
-                    daily_data[date_str] = daily_data.get(date_str, 0) + count
-
-    stats["total_checks"] = len(logs)
-    stats["total_good"] = sum(int(line.split(",")[1].split()[0]) for line in logs)
-    stats["used_ips"] = used_ips_count
-
-    # Generate graph
     if daily_data:
         dates = list(daily_data.keys())
         counts = list(daily_data.values())
@@ -199,11 +191,20 @@ def admin():
         plt.savefig("static/proxy_stats.png")
         plt.close()
 
-    return render_template("admin.html", logs=logs, stats=stats, graph_url="/static/proxy_stats.png")
+    return render_template(
+        "admin.html",
+        logs=[f"{log.date},{log.count} proxies" for log in logs],
+        stats=stats,
+        graph_url="/static/proxy_stats.png"
+    )
 
 @app.route('/static/<path:path>')
 def send_static(path):
     return send_from_directory('static', path)
+
+# Initialize database
+with app.app_context():
+    db.create_all()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
