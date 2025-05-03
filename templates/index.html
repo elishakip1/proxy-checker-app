@@ -1,14 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Proxy Checker</title>
+  <meta charset="UTF-8">
+  <title>Proxy Checker</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-    <h2>Upload Proxy List (One per line)</h2>
-    <form method="POST" enctype="multipart/form-data">
-        <input type="file" name="proxyfile" accept=".txt" required>
-        <button type="submit">Check Proxies</button>
-    </form>
+<body class="bg-gray-900 text-white min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-xl bg-gray-800 rounded-xl shadow-lg p-6">
+    <h1 class="text-3xl font-bold text-center mb-6 text-green-400">🛡️ Proxy Checker</h1>
+
+    <div class="flex justify-center mb-4 space-x-4">
+      <button onclick="showTab('upload')" class="tab-btn bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">Upload File</button>
+      <button onclick="showTab('paste')" class="tab-btn bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">Paste Proxies</button>
+    </div>
+
+    <!-- Upload Tab -->
+    <div id="upload" class="tab-content">
+      <form action="/" method="post" enctype="multipart/form-data" class="space-y-4">
+        <input type="file" name="proxyfile" accept=".txt" required class="w-full p-2 rounded bg-gray-700 border border-gray-600">
+        <button type="submit" class="w-full bg-green-500 hover:bg-green-600 text-white py-2 rounded">Submit</button>
+      </form>
+    </div>
+
+    <!-- Paste Tab -->
+    <div id="paste" class="tab-content hidden">
+      <form action="/paste" method="post" class="space-y-4">
+        <textarea name="proxytext" rows="10" placeholder="Paste proxies here..." required class="w-full p-2 rounded bg-gray-700 border border-gray-600"></textarea>
+        <button type="submit" class="w-full bg-green-500 hover:bg-green-600 text-white py-2 rounded">Submit</button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    function showTab(id) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+      document.getElementById(id).classList.remove('hidden');
+    }
+  </script>
 </body>
 </html>

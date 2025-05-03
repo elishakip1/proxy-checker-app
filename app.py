@@ -1,16 +1,18 @@
-from flask import Flask, render_template, request, send_file
+from flask import Flask, request, render_template
 import os
-import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from bs4 import BeautifulSoup
-import requests
 import time
+import requests
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
 
+PROXY_FILE = r"C:\Users\elish\Downloads\1000 WA.txt"  # Path to your proxy file
+GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 MAX_WORKERS = 30
 MAX_ATTEMPTS = 3
-RETRY_DELAY = 2
+RETRY_DELAY = 2  # seconds
+
 
 def get_ip_from_proxy(proxy):
     try:
@@ -21,8 +23,10 @@ def get_ip_from_proxy(proxy):
         }
         ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=10).text
         return ip
-    except Exception:
+    except Exception as e:
+        print(f"❌ Failed to get IP from proxy {proxy}: {e}")
         return None
+
 
 def get_fraud_score(ip):
     try:
@@ -34,9 +38,10 @@ def get_fraud_score(ip):
             if score_div and "Fraud Score:" in score_div.text:
                 score_text = score_div.text.strip().split(":")[1].strip()
                 return int(score_text)
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ Error checking Scamalytics for {ip}: {e}")
     return None
+
 
 def triple_check_proxy(proxy_line):
     ip = get_ip_from_proxy(proxy_line)
@@ -44,42 +49,51 @@ def triple_check_proxy(proxy_line):
         return None
 
     scores = []
-    for _ in range(MAX_ATTEMPTS):
+    for attempt in range(MAX_ATTEMPTS):
         score = get_fraud_score(ip)
         if score is not None:
             scores.append(score)
+        else:
+            print(f"⚠️ Attempt {attempt+1}: No score returned for {ip}")
         time.sleep(RETRY_DELAY)
 
     if scores.count(0) == MAX_ATTEMPTS:
+        print(f"✅ {ip} passed all checks ➜ Fraud Score: 0")
         return proxy_line
-    return None
+    else:
+        print(f"❌ {ip} failed ➜ Scores: {scores}")
+        return None
 
-@app.route('/', methods=['GET', 'POST'])
+
+@app.route("/", methods=["GET", "POST"])
 def index():
-    if request.method == 'POST':
-        file = request.files['proxyfile']
-        if not file:
-            return "No file uploaded."
-
-        proxies = [line.strip() for line in file.read().decode().splitlines() if line.strip()]
-        good_proxies = []
-
+    results = []
+    if request.method == "POST":
+        if 'proxyfile' in request.files:
+            # File upload handling
+            file = request.files['proxyfile']
+            proxies = file.read().decode("utf-8").strip().splitlines()
+        elif 'proxytext' in request.form:
+            # Paste proxies handling
+            proxytext = request.form.get("proxytext", "")
+            proxies = proxytext.strip().splitlines()
+        
+        # Process proxies
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = [executor.submit(triple_check_proxy, proxy) for proxy in proxies]
             for future in as_completed(futures):
                 result = future.result()
                 if result:
-                    good_proxies.append(result)
+                    results.append(result)
+        
+        # Save to file if any good proxies are found
+        if results:
+            with open(GOOD_PROXIES_FILE, "w") as out:
+                for proxy in results:
+                    out.write(proxy + "\n")
 
-        temp_file = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.txt')
-        for proxy in good_proxies:
-            temp_file.write(proxy + '\n')
-        temp_file.close()
+    return render_template("index.html", results=results)
 
-        return send_file(temp_file.name, as_attachment=True, download_name='zero_score_proxies.txt')
 
-    return render_template('index.html')
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(debug=False, host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    app.run(debug=True)
