@@ -1,5 +1,23 @@
 import os
 import requests
+# At the top with other imports
+import logging
+from logging.handlers import RotatingFileHandler
+
+# In your app setup code:
+app = Flask(__name__)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+log_handler = RotatingFileHandler(
+    'app.log', 
+    maxBytes=1024*1024,  # 1MB
+    backupCount=5,       # Keep 5 backups
+    encoding='utf-8'
+)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+log_handler.setFormatter(formatter)
+app.logger.addHandler(log_handler)
 from flask import Flask, request, render_template, send_from_directory, jsonify
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10,8 +28,15 @@ import matplotlib.pyplot as plt
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import logging
-from concurrent_log_handler import ConcurrentRotatingFileHandler
+import logging
+from logging.handlers import RotatingFileHandler
 
+# Configure logging
+log_handler = RotatingFileHandler('app.log', maxBytes=1024*1024, backupCount=5)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+log_handler.setFormatter(formatter)
+app.logger.addHandler(log_handler)
+app.logger.setLevel(logging.INFO)
 # Initialize Flask app
 app = Flask(__name__)
 
