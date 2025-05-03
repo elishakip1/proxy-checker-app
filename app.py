@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
 
-PROXY_FILE = r"C:\Users\elish\Downloads\1000 WA.txt"  # Path to your proxy file
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 MAX_WORKERS = 30
 MAX_ATTEMPTS = 3
@@ -68,31 +67,38 @@ def triple_check_proxy(proxy_line):
 @app.route("/", methods=["GET", "POST"])
 def index():
     results = []
+    message = ""
     if request.method == "POST":
-        if 'proxyfile' in request.files:
-            # File upload handling
+        proxies = []
+
+        if 'proxyfile' in request.files and request.files['proxyfile'].filename:
             file = request.files['proxyfile']
             proxies = file.read().decode("utf-8").strip().splitlines()
+            message = "Checking uploaded proxy file..."
         elif 'proxytext' in request.form:
-            # Paste proxies handling
             proxytext = request.form.get("proxytext", "")
             proxies = proxytext.strip().splitlines()
-        
-        # Process proxies
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = [executor.submit(triple_check_proxy, proxy) for proxy in proxies]
-            for future in as_completed(futures):
-                result = future.result()
-                if result:
-                    results.append(result)
-        
-        # Save to file if any good proxies are found
-        if results:
-            with open(GOOD_PROXIES_FILE, "w") as out:
-                for proxy in results:
-                    out.write(proxy + "\n")
+            message = "Checking pasted proxies..."
 
-    return render_template("index.html", results=results)
+        if proxies:
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = [executor.submit(triple_check_proxy, proxy) for proxy in proxies]
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        results.append(result)
+
+            if results:
+                with open(GOOD_PROXIES_FILE, "w") as out:
+                    for proxy in results:
+                        out.write(proxy + "\n")
+                message = f"✅ {len(results)} good proxies found."
+            else:
+                message = "⚠️ No good proxies found."
+        else:
+            message = "⚠️ No proxies provided."
+
+    return render_template("index.html", results=results, message=message)
 
 
 @app.route("/paste", methods=["GET", "POST"])
