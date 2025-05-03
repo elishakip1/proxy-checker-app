@@ -15,6 +15,10 @@
         .textarea-box {
             height: 200px;
         }
+        .copy-btn {
+            float: right;
+            font-size: 12px;
+        }
     </style>
 </head>
 <body>
@@ -44,10 +48,24 @@
         <h5 class="mt-4">✅ Good Proxies (Fraud Score 0)</h5>
         <ul class="list-group mt-2">
             {% for proxy in results %}
-            <li class="list-group-item">{{ proxy }}</li>
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span id="proxy-{{ loop.index }}">{{ proxy }}</span>
+                <button class="btn btn-sm btn-outline-secondary copy-btn" onclick="copyToClipboard('proxy-{{ loop.index }}')">Copy</button>
+            </li>
             {% endfor %}
         </ul>
         {% endif %}
     </div>
+
+    <script>
+        function copyToClipboard(elementId) {
+            var text = document.getElementById(elementId).innerText;
+            navigator.clipboard.writeText(text).then(function() {
+                alert("Copied: " + text);
+            }, function(err) {
+                alert("Failed to copy");
+            });
+        }
+    </script>
 </body>
 </html>

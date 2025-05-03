@@ -8,9 +8,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 app = Flask(__name__)
 
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
-MAX_WORKERS = 30
-MAX_ATTEMPTS = 3
-RETRY_DELAY = 2  # seconds
+MAX_WORKERS = 50
+MAX_ATTEMPTS = 2
+RETRY_DELAY = 1  # seconds
+REQUEST_TIMEOUT = 4  # reduced timeout
 
 
 def get_ip_from_proxy(proxy):
@@ -20,7 +21,7 @@ def get_ip_from_proxy(proxy):
             "http": f"http://{user}:{pw}@{host}:{port}",
             "https": f"http://{user}:{pw}@{host}:{port}",
         }
-        ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=10).text
+        ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT).text
         return ip
     except Exception as e:
         print(f"❌ Failed to get IP from proxy {proxy}: {e}")
@@ -30,7 +31,7 @@ def get_ip_from_proxy(proxy):
 def get_fraud_score(ip):
     try:
         url = f"https://scamalytics.com/ip/{ip}"
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             score_div = soup.find('div', class_='score')
@@ -52,16 +53,11 @@ def triple_check_proxy(proxy_line):
         score = get_fraud_score(ip)
         if score is not None:
             scores.append(score)
-        else:
-            print(f"⚠️ Attempt {attempt+1}: No score returned for {ip}")
         time.sleep(RETRY_DELAY)
 
     if scores.count(0) == MAX_ATTEMPTS:
-        print(f"✅ {ip} passed all checks ➜ Fraud Score: 0")
         return proxy_line
-    else:
-        print(f"❌ {ip} failed ➜ Scores: {scores}")
-        return None
+    return None
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -79,6 +75,8 @@ def index():
             proxytext = request.form.get("proxytext", "")
             proxies = proxytext.strip().splitlines()
             message = "Checking pasted proxies..."
+
+        proxies = list(set(p.strip() for p in proxies if p.strip()))
 
         if proxies:
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
