@@ -1,77 +1,39 @@
-from flask import Flask, request, render_template, send_from_directory, jsonify
-from flask_sqlalchemy import SQLAlchemy
-# Add this at the very top of app.py before other imports
-import matplotlib
-matplotlib.use('Agg')  # Set the backend before importing pyplot
-import matplotlib.pyplot as plt
 import os
+from flask import Flask, request, render_template, send_from_directory, jsonify
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import atexit
-from apscheduler.schedulers.background import BackgroundScheduler
+from supabase import create_client, Client
+from dotenv import load_dotenv
+import logging
+from concurrent_log_handler import ConcurrentRotatingFileHandler
 
+# Initialize Flask
 app = Flask(__name__)
 
-# Configure database - uses Render's PostgreSQL by default
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///local.db').replace('postgres://', 'postgresql://')
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_pre_ping': True,
-    'pool_recycle': 300,
-    'pool_size': 20,
-    'max_overflow': 0
-}
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Load environment variables
+load_dotenv()
 
-db = SQLAlchemy(app)
+# Configure logging
+log_handler = ConcurrentRotatingFileHandler('app.log', 'a', 1024*1024, 5)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+log_handler.setFormatter(formatter)
+app.logger.addHandler(log_handler)
+app.logger.setLevel(logging.INFO)
 
-# Database Models
-class UsedIP(db.Model):
-    __tablename__ = 'used_ips'
-    id = db.Column(db.Integer, primary_key=True)
-    ip = db.Column(db.String(50), nullable=False, unique=True)
-    proxy = db.Column(db.String(200), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    last_used = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-class ProxyLog(db.Model):
-    __tablename__ = 'proxy_logs'
-    id = db.Column(db.Integer, primary_key=True)
-    date = db.Column(db.Date, default=date.today, nullable=False)
-    count = db.Column(db.Integer, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+# Initialize Supabase
+supabase: Client = create_client(
+    os.getenv('SUPABASE_URL'),
+    os.getenv('SUPABASE_KEY')
+)
 
 # Constants
 MAX_WORKERS = 50
 REQUEST_TIMEOUT = 4  # seconds
-
-# Database maintenance
-def cleanup_old_records():
-    with app.app_context():
-        try:
-            # Delete logs older than 30 days
-            old_logs = ProxyLog.query.filter(
-                ProxyLog.date < date.today() - timedelta(days=30)
-            ).delete()
-            
-            # Delete IPs not used in 60 days
-            old_ips = UsedIP.query.filter(
-                UsedIP.last_used < datetime.utcnow() - timedelta(days=60)
-            ).delete()
-            
-            db.session.commit()
-            app.logger.info(f"Cleaned up {old_logs} old logs and {old_ips} old IPs")
-        except Exception as e:
-            db.session.rollback()
-            app.logger.error(f"Cleanup error: {str(e)}")
-
-# Initialize scheduler
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=cleanup_old_records, trigger="interval", days=1)
-scheduler.start()
-atexit.register(lambda: scheduler.shutdown())
 
 # Helper Functions
 def get_ip_from_proxy(proxy):
@@ -105,26 +67,42 @@ def track_used_ip(proxy):
     try:
         ip = get_ip_from_proxy(proxy)
         if ip:
-            existing = UsedIP.query.filter_by(ip=ip).first()
-            if not existing:
-                new_ip = UsedIP(ip=ip, proxy=proxy)
-                db.session.add(new_ip)
+            # Check if IP exists
+            existing = supabase.table('used_ips')\
+                .select('ip')\
+                .eq('ip', ip)\
+                .execute()
+            
+            if not existing.data:
+                # Insert new IP
+                supabase.table('used_ips').insert({
+                    "ip": ip,
+                    "proxy": proxy,
+                    "last_used": datetime.now().isoformat()
+                }).execute()
             else:
-                existing.last_used = datetime.utcnow()
-            db.session.commit()
+                # Update last_used
+                supabase.table('used_ips')\
+                    .update({"last_used": datetime.now().isoformat()})\
+                    .eq('ip', ip)\
+                    .execute()
             return ip
     except Exception as e:
         app.logger.error(f"Error tracking IP: {e}")
-        db.session.rollback()
     return None
 
 def is_ip_used(proxy):
     try:
         ip = get_ip_from_proxy(proxy)
-        return ip and bool(UsedIP.query.filter_by(ip=ip).first())
+        if ip:
+            result = supabase.table('used_ips')\
+                .select('ip')\
+                .eq('ip', ip)\
+                .execute()
+            return len(result.data) > 0
     except Exception as e:
         app.logger.error(f"Error checking IP usage: {e}")
-        return False
+    return False
 
 def single_check_proxy(proxy_line):
     ip = get_ip_from_proxy(proxy_line)
@@ -174,11 +152,11 @@ def index():
                 good_count = len([r for r in results if not r['used']])
                 if good_count > 0:
                     try:
-                        new_log = ProxyLog(count=good_count)
-                        db.session.add(new_log)
-                        db.session.commit()
+                        supabase.table('proxy_logs').insert({
+                            "date": date.today().isoformat(),
+                            "count": good_count
+                        }).execute()
                     except Exception as e:
-                        db.session.rollback()
                         app.logger.error(f"Error saving log: {e}")
 
                 message = f"✅ {good_count} good proxies found ({len(results) - good_count} used)."
@@ -200,14 +178,12 @@ def track_used():
 @app.route("/clear-used-ips", methods=["POST"])
 def clear_used_ips():
     try:
-        num_deleted = UsedIP.query.delete()
-        db.session.commit()
+        supabase.table('used_ips').delete().neq('id', 0).execute()
         return jsonify({
             "status": "success",
-            "message": f"Cleared {num_deleted} used IP records"
+            "message": "All used IP records cleared successfully"
         })
     except Exception as e:
-        db.session.rollback()
         return jsonify({
             "status": "error",
             "message": f"Failed to clear used IPs: {str(e)}"
@@ -215,43 +191,53 @@ def clear_used_ips():
 
 @app.route("/admin")
 def admin():
-    stats = {
-        "total_checks": ProxyLog.query.count(),
-        "total_good": db.session.query(db.func.sum(ProxyLog.count)).scalar() or 0,
-        "used_ips": UsedIP.query.count()
-    }
+    try:
+        # Get stats
+        logs = supabase.table('proxy_logs')\
+            .select('*')\
+            .order('date')\
+            .execute()
+        
+        used_ips = supabase.table('used_ips')\
+            .select('count', count=True)\
+            .execute()
+        
+        total_good = supabase.rpc('sum_logs').execute()
 
-    # Generate graph
-    logs = ProxyLog.query.order_by(ProxyLog.date).all()
-    daily_data = {log.date.strftime('%Y-%m-%d'): log.count for log in logs}
+        stats = {
+            "total_checks": len(logs.data),
+            "total_good": total_good.data[0]['sum'] if total_good.data else 0,
+            "used_ips": used_ips.count
+        }
 
-    if daily_data:
-        plt.figure(figsize=(10, 4))
-        plt.plot(list(daily_data.keys()), list(daily_data.values()), marker="o", color="green")
-        plt.title("Good Proxies per Day")
-        plt.xlabel("Date")
-        plt.ylabel("Count")
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        if not os.path.exists("static"):
-            os.makedirs("static")
-        plt.savefig("static/proxy_stats.png")
-        plt.close()
+        # Generate graph
+        daily_data = {log['date']: log['count'] for log in logs.data}
+        if daily_data:
+            plt.figure(figsize=(10, 4))
+            plt.plot(list(daily_data.keys()), list(daily_data.values()), marker="o", color="green")
+            plt.title("Good Proxies per Day")
+            plt.xlabel("Date")
+            plt.ylabel("Count")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            if not os.path.exists("static"):
+                os.makedirs("static")
+            plt.savefig("static/proxy_stats.png")
+            plt.close()
 
-    return render_template(
-        "admin.html",
-        logs=[f"{log.date},{log.count} proxies" for log in logs],
-        stats=stats,
-        graph_url="/static/proxy_stats.png"
-    )
+        return render_template(
+            "admin.html",
+            logs=[f"{log['date']},{log['count']} proxies" for log in logs.data],
+            stats=stats,
+            graph_url="/static/proxy_stats.png"
+        )
+    except Exception as e:
+        app.logger.error(f"Admin error: {e}")
+        return render_template("admin.html", logs=[], stats={}, graph_url=None)
 
 @app.route('/static/<path:path>')
 def send_static(path):
     return send_from_directory('static', path)
-
-# Initialize database
-with app.app_context():
-    db.create_all()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
