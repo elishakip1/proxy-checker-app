@@ -27,6 +27,17 @@
         </div>
     </div>
 
+    <div class="row mb-4">
+        <div class="col">
+            <div class="alert alert-danger">
+                Total Used IPs: {{ stats.used_ips }}
+                <button id="clearUsedIpsBtn" class="btn btn-sm btn-outline-dark float-end">
+                    🗑️ Clear All Used IPs
+                </button>
+            </div>
+        </div>
+    </div>
+
     <div class="mb-4 text-center">
         <img src="{{ graph_url }}" alt="Proxy Stats Graph" class="img-fluid">
     </div>
@@ -42,5 +53,30 @@
         <a href="/" class="btn btn-outline-secondary">🔙 Back to Home</a>
     </div>
 </div>
+
+<script>
+    document.getElementById('clearUsedIpsBtn').addEventListener('click', function() {
+        if (confirm('Are you sure you want to delete ALL used IP records? This cannot be undone.')) {
+            fetch('/clear-used-ips', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(error => {
+                alert('Error clearing used IPs: ' + error);
+            });
+        }
+    });
+</script>
 </body>
 </html>
