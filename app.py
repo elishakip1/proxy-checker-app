@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, send_from_directory
+from flask import Flask, request, render_template, send_from_directory, jsonify
 import os
 import time
 import requests
@@ -11,6 +11,7 @@ app = Flask(__name__)
 
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 PROXY_LOG_FILE = "proxy_log.txt"
+USED_IPS_FILE = "used_ips.txt"
 MAX_WORKERS = 50
 REQUEST_TIMEOUT = 4  # seconds
 
@@ -44,6 +45,32 @@ def get_fraud_score(ip):
     return None
 
 
+def track_used_ip(proxy):
+    try:
+        ip = get_ip_from_proxy(proxy)
+        if ip:
+            with open(USED_IPS_FILE, "a") as f:
+                f.write(f"{ip},{proxy}\n")
+            return ip
+    except Exception as e:
+        print(f"Error tracking IP: {e}")
+    return None
+
+
+def is_ip_used(proxy):
+    try:
+        ip = get_ip_from_proxy(proxy)
+        if ip and os.path.exists(USED_IPS_FILE):
+            with open(USED_IPS_FILE, "r") as f:
+                for line in f:
+                    stored_ip, _ = line.strip().split(",", 1)
+                    if stored_ip == ip:
+                        return True
+    except:
+        pass
+    return False
+
+
 def single_check_proxy(proxy_line):
     ip = get_ip_from_proxy(proxy_line)
     if not ip:
@@ -59,6 +86,12 @@ def single_check_proxy(proxy_line):
 def index():
     results = []
     message = ""
+    used_proxies = set()
+    
+    if os.path.exists(USED_IPS_FILE):
+        with open(USED_IPS_FILE, "r") as f:
+            used_proxies = {line.strip().split(",", 1)[1] for line in f if line.strip()}
+    
     if request.method == "POST":
         proxies = []
 
@@ -79,24 +112,36 @@ def index():
                 for future in as_completed(futures):
                     result = future.result()
                     if result:
-                        results.append(result)
+                        results.append({
+                            "proxy": result,
+                            "used": result in used_proxies or is_ip_used(result)
+                        })
 
             if results:
                 with open(GOOD_PROXIES_FILE, "w") as out:
-                    for proxy in results:
-                        out.write(proxy + "\n")
+                    for item in results:
+                        if not item["used"]:
+                            out.write(item["proxy"] + "\n")
 
-                # Log result
                 with open(PROXY_LOG_FILE, "a") as log:
-                    log.write(f"{datetime.date.today()},{len(results)} proxies\n")
+                    log.write(f"{datetime.date.today()},{len([r for r in results if not r['used']])} proxies\n")
 
-                message = f"✅ {len(results)} good proxies found."
+                message = f"✅ {len([r for r in results if not r['used']])} good proxies found ({len([r for r in results if r['used']])} used)."
             else:
                 message = "⚠️ No good proxies found."
         else:
             message = "⚠️ No proxies provided."
 
     return render_template("index.html", results=results, message=message)
+
+
+@app.route("/track-used", methods=["POST"])
+def track_used():
+    data = request.get_json()
+    if data and "proxy" in data:
+        track_used_ip(data["proxy"])
+        return jsonify({"status": "success"})
+    return jsonify({"status": "error"}), 400
 
 
 @app.route("/admin")
@@ -118,7 +163,6 @@ def admin():
     stats["total_checks"] = len(logs)
     stats["total_good"] = sum(int(line.split(",")[1].split()[0]) for line in logs)
 
-    # Generate graph
     if daily_data:
         dates = list(daily_data.keys())
         counts = list(daily_data.values())
