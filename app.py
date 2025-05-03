@@ -4,33 +4,72 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, date  # Updated import
+from datetime import datetime, date, timedelta
 import matplotlib.pyplot as plt
+import atexit
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
-# Database configuration
+# Configure database - uses Render's PostgreSQL by default
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///local.db').replace('postgres://', 'postgresql://')
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_recycle': 300,
+    'pool_size': 20,
+    'max_overflow': 0
+}
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
 db = SQLAlchemy(app)
 
-# Models
+# Database Models
 class UsedIP(db.Model):
+    __tablename__ = 'used_ips'
     id = db.Column(db.Integer, primary_key=True)
-    ip = db.Column(db.String(50), nullable=False)
+    ip = db.Column(db.String(50), nullable=False, unique=True)
     proxy = db.Column(db.String(200), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    last_used = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class ProxyLog(db.Model):
+    __tablename__ = 'proxy_logs'
     id = db.Column(db.Integer, primary_key=True)
-    date = db.Column(db.Date, nullable=False, default=date.today)  # Fixed datetime usage
+    date = db.Column(db.Date, default=date.today, nullable=False)
     count = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # Constants
 MAX_WORKERS = 50
 REQUEST_TIMEOUT = 4  # seconds
 
-# Helper functions
+# Database maintenance
+def cleanup_old_records():
+    with app.app_context():
+        try:
+            # Delete logs older than 30 days
+            old_logs = ProxyLog.query.filter(
+                ProxyLog.date < date.today() - timedelta(days=30)
+            ).delete()
+            
+            # Delete IPs not used in 60 days
+            old_ips = UsedIP.query.filter(
+                UsedIP.last_used < datetime.utcnow() - timedelta(days=60)
+            ).delete()
+            
+            db.session.commit()
+            app.logger.info(f"Cleaned up {old_logs} old logs and {old_ips} old IPs")
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f"Cleanup error: {str(e)}")
+
+# Initialize scheduler
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=cleanup_old_records, trigger="interval", days=1)
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown())
+
+# Helper Functions
 def get_ip_from_proxy(proxy):
     try:
         host, port, user, pw = proxy.strip().split(":")
@@ -38,10 +77,11 @@ def get_ip_from_proxy(proxy):
             "http": f"http://{user}:{pw}@{host}:{port}",
             "https": f"http://{user}:{pw}@{host}:{port}",
         }
-        ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT).text
-        return ip
+        response = requests.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        return response.text
     except Exception as e:
-        print(f"❌ Failed to get IP from proxy {proxy}: {e}")
+        app.logger.error(f"Failed to get IP from proxy {proxy}: {e}")
         return None
 
 def get_fraud_score(ip):
@@ -52,22 +92,25 @@ def get_fraud_score(ip):
             soup = BeautifulSoup(response.text, 'html.parser')
             score_div = soup.find('div', class_='score')
             if score_div and "Fraud Score:" in score_div.text:
-                score_text = score_div.text.strip().split(":")[1].strip()
-                return int(score_text)
+                return int(score_div.text.strip().split(":")[1].strip())
     except Exception as e:
-        print(f"⚠️ Error checking Scamalytics for {ip}: {e}")
+        app.logger.error(f"Error checking Scamalytics for {ip}: {e}")
     return None
 
 def track_used_ip(proxy):
     try:
         ip = get_ip_from_proxy(proxy)
-        if ip and not UsedIP.query.filter_by(ip=ip).first():
-            new_ip = UsedIP(ip=ip, proxy=proxy)
-            db.session.add(new_ip)
+        if ip:
+            existing = UsedIP.query.filter_by(ip=ip).first()
+            if not existing:
+                new_ip = UsedIP(ip=ip, proxy=proxy)
+                db.session.add(new_ip)
+            else:
+                existing.last_used = datetime.utcnow()
             db.session.commit()
             return ip
     except Exception as e:
-        print(f"Error tracking IP: {e}")
+        app.logger.error(f"Error tracking IP: {e}")
         db.session.rollback()
     return None
 
@@ -76,7 +119,7 @@ def is_ip_used(proxy):
         ip = get_ip_from_proxy(proxy)
         return ip and bool(UsedIP.query.filter_by(ip=ip).first())
     except Exception as e:
-        print(f"Error checking IP usage: {e}")
+        app.logger.error(f"Error checking IP usage: {e}")
         return False
 
 def single_check_proxy(proxy_line):
@@ -100,8 +143,11 @@ def index():
 
         if 'proxyfile' in request.files and request.files['proxyfile'].filename:
             file = request.files['proxyfile']
-            proxies = file.read().decode("utf-8").strip().splitlines()
-            message = "Checking uploaded proxy file..."
+            try:
+                proxies = file.read().decode("utf-8").strip().splitlines()
+                message = "Checking uploaded proxy file..."
+            except Exception as e:
+                message = f"⚠️ Error reading file: {str(e)}"
         elif 'proxytext' in request.form:
             proxytext = request.form.get("proxytext", "")
             proxies = proxytext.strip().splitlines()
@@ -123,9 +169,13 @@ def index():
             if results:
                 good_count = len([r for r in results if not r['used']])
                 if good_count > 0:
-                    new_log = ProxyLog(count=good_count)  # date auto-populated by default
-                    db.session.add(new_log)
-                    db.session.commit()
+                    try:
+                        new_log = ProxyLog(count=good_count)
+                        db.session.add(new_log)
+                        db.session.commit()
+                    except Exception as e:
+                        db.session.rollback()
+                        app.logger.error(f"Error saving log: {e}")
 
                 message = f"✅ {good_count} good proxies found ({len(results) - good_count} used)."
             else:
@@ -146,11 +196,11 @@ def track_used():
 @app.route("/clear-used-ips", methods=["POST"])
 def clear_used_ips():
     try:
-        UsedIP.query.delete()
+        num_deleted = UsedIP.query.delete()
         db.session.commit()
         return jsonify({
             "status": "success",
-            "message": "All used IP records cleared successfully"
+            "message": f"Cleared {num_deleted} used IP records"
         })
     except Exception as e:
         db.session.rollback()
@@ -167,15 +217,13 @@ def admin():
         "used_ips": UsedIP.query.count()
     }
 
-    # Generate graph data
+    # Generate graph
     logs = ProxyLog.query.order_by(ProxyLog.date).all()
     daily_data = {log.date.strftime('%Y-%m-%d'): log.count for log in logs}
 
     if daily_data:
-        dates = list(daily_data.keys())
-        counts = list(daily_data.values())
         plt.figure(figsize=(10, 4))
-        plt.plot(dates, counts, marker="o", color="green")
+        plt.plot(list(daily_data.keys()), list(daily_data.values()), marker="o", color="green")
         plt.title("Good Proxies per Day")
         plt.xlabel("Date")
         plt.ylabel("Count")
@@ -202,4 +250,4 @@ with app.app_context():
     db.create_all()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
