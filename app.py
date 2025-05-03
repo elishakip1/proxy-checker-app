@@ -9,12 +9,12 @@ import matplotlib.pyplot as plt
 
 app = Flask(__name__)
 
+# File paths
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 PROXY_LOG_FILE = "proxy_log.txt"
 USED_IPS_FILE = "used_ips.txt"
 MAX_WORKERS = 50
 REQUEST_TIMEOUT = 4  # seconds
-
 
 def get_ip_from_proxy(proxy):
     try:
@@ -28,7 +28,6 @@ def get_ip_from_proxy(proxy):
     except Exception as e:
         print(f"❌ Failed to get IP from proxy {proxy}: {e}")
         return None
-
 
 def get_fraud_score(ip):
     try:
@@ -44,7 +43,6 @@ def get_fraud_score(ip):
         print(f"⚠️ Error checking Scamalytics for {ip}: {e}")
     return None
 
-
 def track_used_ip(proxy):
     try:
         ip = get_ip_from_proxy(proxy)
@@ -55,7 +53,6 @@ def track_used_ip(proxy):
     except Exception as e:
         print(f"Error tracking IP: {e}")
     return None
-
 
 def is_ip_used(proxy):
     try:
@@ -70,7 +67,6 @@ def is_ip_used(proxy):
         pass
     return False
 
-
 def single_check_proxy(proxy_line):
     ip = get_ip_from_proxy(proxy_line)
     if not ip:
@@ -80,7 +76,6 @@ def single_check_proxy(proxy_line):
     if score == 0:
         return proxy_line
     return None
-
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -134,7 +129,6 @@ def index():
 
     return render_template("index.html", results=results, message=message)
 
-
 @app.route("/track-used", methods=["POST"])
 def track_used():
     data = request.get_json()
@@ -143,13 +137,38 @@ def track_used():
         return jsonify({"status": "success"})
     return jsonify({"status": "error"}), 400
 
+@app.route("/clear-used-ips", methods=["POST"])
+def clear_used_ips():
+    try:
+        if os.path.exists(USED_IPS_FILE):
+            os.remove(USED_IPS_FILE)
+            return jsonify({
+                "status": "success",
+                "message": "All used IP records have been cleared successfully"
+            })
+        return jsonify({
+            "status": "success",
+            "message": "No used IP records to clear"
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to clear used IPs: {str(e)}"
+        }), 500
 
 @app.route("/admin")
 def admin():
     stats = {}
     logs = []
     daily_data = {}
+    used_ips_count = 0
 
+    # Count used IPs
+    if os.path.exists(USED_IPS_FILE):
+        with open(USED_IPS_FILE, 'r') as f:
+            used_ips_count = sum(1 for line in f if line.strip())
+
+    # Load proxy logs
     if os.path.exists(PROXY_LOG_FILE):
         with open(PROXY_LOG_FILE) as f:
             for line in f:
@@ -162,7 +181,9 @@ def admin():
 
     stats["total_checks"] = len(logs)
     stats["total_good"] = sum(int(line.split(",")[1].split()[0]) for line in logs)
+    stats["used_ips"] = used_ips_count
 
+    # Generate graph
     if daily_data:
         dates = list(daily_data.keys())
         counts = list(daily_data.values())
@@ -180,11 +201,9 @@ def admin():
 
     return render_template("admin.html", logs=logs, stats=stats, graph_url="/static/proxy_stats.png")
 
-
 @app.route('/static/<path:path>')
 def send_static(path):
     return send_from_directory('static', path)
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
