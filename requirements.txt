@@ -7,3 +7,4 @@ matplotlib==3.8.0
 numpy==1.26.0
 gunicorn==20.1.0
 httpx==0.25.0  # Important for Supabase compatibility
+concurrent-log-handler==0.9.24
