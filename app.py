@@ -8,55 +8,38 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 app = Flask(__name__)
 
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
-MAX_WORKERS = 50
-MAX_ATTEMPTS = 2
-RETRY_DELAY = 1  # seconds
-REQUEST_TIMEOUT = 4  # reduced timeout
+MAX_WORKERS = 60  # Increased threads
+REQUEST_TIMEOUT = 3  # Shorter timeout
+
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=100, pool_maxsize=100)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
 
 
-def get_ip_from_proxy(proxy):
+def get_ip_and_score(proxy):
     try:
         host, port, user, pw = proxy.strip().split(":")
         proxies = {
             "http": f"http://{user}:{pw}@{host}:{port}",
             "https": f"http://{user}:{pw}@{host}:{port}",
         }
-        ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT).text
-        return ip
-    except Exception as e:
-        print(f"❌ Failed to get IP from proxy {proxy}: {e}")
-        return None
 
+        ip_resp = session.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT)
+        ip = ip_resp.text.strip()
 
-def get_fraud_score(ip):
-    try:
-        url = f"https://scamalytics.com/ip/{ip}"
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
+        scam_url = f"https://scamalytics.com/ip/{ip}"
+        scam_resp = session.get(scam_url, timeout=REQUEST_TIMEOUT)
+        if scam_resp.status_code == 200:
+            soup = BeautifulSoup(scam_resp.text, 'html.parser')
             score_div = soup.find('div', class_='score')
             if score_div and "Fraud Score:" in score_div.text:
-                score_text = score_div.text.strip().split(":")[1].strip()
-                return int(score_text)
+                score = int(score_div.text.split(":")[1].strip())
+                if score == 0:
+                    print(f"✅ {ip} passed ➜ Score 0")
+                    return proxy
     except Exception as e:
-        print(f"⚠️ Error checking Scamalytics for {ip}: {e}")
-    return None
-
-
-def triple_check_proxy(proxy_line):
-    ip = get_ip_from_proxy(proxy_line)
-    if not ip:
-        return None
-
-    scores = []
-    for attempt in range(MAX_ATTEMPTS):
-        score = get_fraud_score(ip)
-        if score is not None:
-            scores.append(score)
-        time.sleep(RETRY_DELAY)
-
-    if scores.count(0) == MAX_ATTEMPTS:
-        return proxy_line
+        print(f"❌ Error for proxy {proxy}: {e}")
     return None
 
 
@@ -64,6 +47,8 @@ def triple_check_proxy(proxy_line):
 def index():
     results = []
     message = ""
+    hide_input = False
+
     if request.method == "POST":
         proxies = []
 
@@ -80,7 +65,7 @@ def index():
 
         if proxies:
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [executor.submit(triple_check_proxy, proxy) for proxy in proxies]
+                futures = [executor.submit(get_ip_and_score, proxy) for proxy in proxies]
                 for future in as_completed(futures):
                     result = future.result()
                     if result:
@@ -93,10 +78,11 @@ def index():
                 message = f"✅ {len(results)} good proxies found."
             else:
                 message = "⚠️ No good proxies found."
+            hide_input = True
         else:
             message = "⚠️ No proxies provided."
 
-    return render_template("index.html", results=results, message=message)
+    return render_template("index.html", results=results, message=message, hide_input=hide_input)
 
 
 @app.route("/paste", methods=["GET", "POST"])
