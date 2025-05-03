@@ -1,17 +1,25 @@
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, abort
 import os
 import time
 import requests
+import logging
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 app = Flask(__name__)
 
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
+LOG_FILE = "logs/proxy_checks.log"
 MAX_WORKERS = 50
 MAX_ATTEMPTS = 2
-RETRY_DELAY = 1  # seconds
-REQUEST_TIMEOUT = 4  # reduced timeout
+RETRY_DELAY = 1
+REQUEST_TIMEOUT = 4
+
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "secret123")  # Optional password
+
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(message)s")
 
 
 def get_ip_from_proxy(proxy):
@@ -24,7 +32,7 @@ def get_ip_from_proxy(proxy):
         ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT).text
         return ip
     except Exception as e:
-        print(f"❌ Failed to get IP from proxy {proxy}: {e}")
+        logging.info(f"❌ {proxy} - Failed to get IP: {e}")
         return None
 
 
@@ -39,7 +47,7 @@ def get_fraud_score(ip):
                 score_text = score_div.text.strip().split(":")[1].strip()
                 return int(score_text)
     except Exception as e:
-        print(f"⚠️ Error checking Scamalytics for {ip}: {e}")
+        logging.info(f"⚠️ Scamalytics error for {ip}: {e}")
     return None
 
 
@@ -49,11 +57,14 @@ def triple_check_proxy(proxy_line):
         return None
 
     scores = []
-    for attempt in range(MAX_ATTEMPTS):
+    for _ in range(MAX_ATTEMPTS):
         score = get_fraud_score(ip)
         if score is not None:
             scores.append(score)
         time.sleep(RETRY_DELAY)
+
+    avg_score = sum(scores) / len(scores) if scores else None
+    logging.info(f"{proxy_line} → {ip} → Scores: {scores} → Avg: {avg_score}")
 
     if scores.count(0) == MAX_ATTEMPTS:
         return proxy_line
@@ -99,9 +110,32 @@ def index():
     return render_template("index.html", results=results, message=message)
 
 
-@app.route("/paste", methods=["GET", "POST"])
-def paste():
-    return index()
+@app.route("/admin")
+def admin():
+    if request.args.get("pw") != ADMIN_PASSWORD:
+        return abort(403)
+
+    log_lines = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r") as f:
+            log_lines = f.readlines()[-100:]
+
+    good_count = 0
+    total_checked = 0
+
+    for line in log_lines:
+        if "Scores: [0, 0]" in line:
+            good_count += 1
+        if "→" in line:
+            total_checked += 1
+
+    stats = {
+        "total_checked": total_checked,
+        "good_count": good_count,
+        "log_lines": log_lines[::-1],
+    }
+
+    return render_template("admin.html", stats=stats)
 
 
 if __name__ == "__main__":
