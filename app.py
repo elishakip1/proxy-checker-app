@@ -1,108 +1,92 @@
-from flask import Flask, request, render_template
-import os
-import time
-import requests
-from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-app = Flask(__name__)
-
-GOOD_PROXIES_FILE = "zero_score_proxies.txt"
-MAX_WORKERS = 50
-MAX_ATTEMPTS = 2
-RETRY_DELAY = 1  # seconds
-REQUEST_TIMEOUT = 4  # reduced timeout
-
-
-def get_ip_from_proxy(proxy):
-    try:
-        host, port, user, pw = proxy.strip().split(":")
-        proxies = {
-            "http": f"http://{user}:{pw}@{host}:{port}",
-            "https": f"http://{user}:{pw}@{host}:{port}",
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Proxy Checker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f0f2f5;
         }
-        ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT).text
-        return ip
-    except Exception as e:
-        print(f"❌ Failed to get IP from proxy {proxy}: {e}")
-        return None
+        .container {
+            margin-top: 50px;
+            max-width: 800px;
+        }
+        .textarea-box {
+            height: 200px;
+        }
+        .copy-btn {
+            float: right;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container bg-white p-4 rounded shadow-sm">
+        <h2 class="mb-4 text-center">Proxy Checker</h2>
 
+        {% if message %}
+        <div class="alert alert-info">{{ message }}</div>
+        {% endif %}
 
-def get_fraud_score(ip):
-    try:
-        url = f"https://scamalytics.com/ip/{ip}"
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            score_div = soup.find('div', class_='score')
-            if score_div and "Fraud Score:" in score_div.text:
-                score_text = score_div.text.strip().split(":")[1].strip()
-                return int(score_text)
-    except Exception as e:
-        print(f"⚠️ Error checking Scamalytics for {ip}: {e}")
-    return None
+        <div class="accordion" id="proxyAccordion">
+            <div class="accordion-item">
+                <h2 class="accordion-header" id="formHeading">
+                    <button class="accordion-button {% if results %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#proxyForm" aria-expanded="{{ 'false' if results else 'true' }}" aria-controls="proxyForm">
+                        Paste or Upload Proxies
+                    </button>
+                </h2>
+                <div id="proxyForm" class="accordion-collapse collapse {% if not results %}show{% endif %}" aria-labelledby="formHeading" data-bs-parent="#proxyAccordion">
+                    <div class="accordion-body">
+                        <form method="POST" enctype="multipart/form-data">
+                            <div class="mb-3">
+                                <label for="proxyfile" class="form-label">Upload Proxy File</label>
+                                <input type="file" class="form-control" name="proxyfile">
+                            </div>
+                            <div class="mb-3">
+                                <label for="proxytext" class="form-label">Or Paste Proxies</label>
+                                <textarea name="proxytext" class="form-control textarea-box" placeholder="Paste proxies here (one per line)..."></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100">Check Proxies</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
 
+        {% if results %}
+        <hr>
+        <h5 class="mt-4">✅ Good Proxies (Fraud Score 0)</h5>
+        <ul class="list-group mt-2">
+            {% for proxy in results %}
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span id="proxy-{{ loop.index }}">{{ proxy }}</span>
+                <button class="btn btn-sm btn-outline-secondary copy-btn" onclick="copyToClipboard('proxy-{{ loop.index }}')">Copy</button>
+            </li>
+            {% endfor %}
+        </ul>
+        <p class="mt-3 text-muted text-end">You will be redirected to the homepage in 5 minutes...</p>
+        {% endif %}
+    </div>
 
-def triple_check_proxy(proxy_line):
-    ip = get_ip_from_proxy(proxy_line)
-    if not ip:
-        return None
+    <script>
+        function copyToClipboard(elementId) {
+            var text = document.getElementById(elementId).innerText;
+            navigator.clipboard.writeText(text).then(function() {
+                alert("Copied: " + text);
+            }, function(err) {
+                alert("Failed to copy");
+            });
+        }
 
-    scores = []
-    for attempt in range(MAX_ATTEMPTS):
-        score = get_fraud_score(ip)
-        if score is not None:
-            scores.append(score)
-        time.sleep(RETRY_DELAY)
+        {% if results %}
+        // Auto-redirect to home after 5 minutes
+        setTimeout(function() {
+            window.location.href = "/";
+        }, 300000);  // 300,000 ms = 5 minutes
+        {% endif %}
+    </script>
 
-    if scores.count(0) == MAX_ATTEMPTS:
-        return proxy_line
-    return None
-
-
-@app.route("/", methods=["GET", "POST"])
-def index():
-    results = []
-    message = ""
-    if request.method == "POST":
-        proxies = []
-
-        if 'proxyfile' in request.files and request.files['proxyfile'].filename:
-            file = request.files['proxyfile']
-            proxies = file.read().decode("utf-8").strip().splitlines()
-            message = "Checking uploaded proxy file..."
-        elif 'proxytext' in request.form:
-            proxytext = request.form.get("proxytext", "")
-            proxies = proxytext.strip().splitlines()
-            message = "Checking pasted proxies..."
-
-        proxies = list(set(p.strip() for p in proxies if p.strip()))
-
-        if proxies:
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [executor.submit(triple_check_proxy, proxy) for proxy in proxies]
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result:
-                        results.append(result)
-
-            if results:
-                with open(GOOD_PROXIES_FILE, "w") as out:
-                    for proxy in results:
-                        out.write(proxy + "\n")
-                message = f"✅ {len(results)} good proxies found."
-            else:
-                message = "⚠️ No good proxies found."
-        else:
-            message = "⚠️ No proxies provided."
-
-    return render_template("index.html", results=results, message=message)
-
-
-@app.route("/paste", methods=["GET", "POST"])
-def paste():
-    return index()
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
