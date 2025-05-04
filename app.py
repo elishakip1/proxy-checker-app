@@ -56,6 +56,12 @@ def list_used_ips():
     sheet = get_sheet()
     return sheet.get_all_records()
 
+def list_good_proxies():
+    if not os.path.exists(GOOD_PROXIES_FILE):
+        return []
+    with open(GOOD_PROXIES_FILE, "r") as f:
+        return [line.strip() for line in f if line.strip()]
+
 def get_ip_from_proxy(proxy):
     try:
         host, port, user, pw = proxy.strip().split(":")
@@ -191,7 +197,8 @@ def admin():
         plt.close()
 
     used_ips = list_used_ips()
-    return render_template("admin.html", logs=logs, stats=stats, graph_url="/static/proxy_stats.png", used_ips=used_ips)
+    good_proxies = list_good_proxies()
+    return render_template("admin.html", logs=logs, stats=stats, graph_url="/static/proxy_stats.png", used_ips=used_ips, good_proxies=good_proxies)
 
 @app.route('/static/<path:path>')
 def send_static(path):
