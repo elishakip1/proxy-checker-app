@@ -8,6 +8,7 @@ import datetime
 import matplotlib.pyplot as plt
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import json
 
 app = Flask(__name__)
 
@@ -16,35 +17,20 @@ PROXY_LOG_FILE = "proxy_log.txt"
 MAX_WORKERS = 50
 REQUEST_TIMEOUT = 4
 
-import base64
-import os
-import json
-from oauth2client.service_account import ServiceAccountCredentials
-
-SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-
-def get_gsheet_client():
-    encoded_creds = os.getenv("GOOGLE_CREDENTIALS_BASE64")
-    if not encoded_creds:
-        raise Exception("Missing GOOGLE_CREDENTIALS_BASE64 environment variable.")
-    
-    creds_json = base64.b64decode(encoded_creds).decode("utf-8")
-    creds_dict = json.loads(creds_json)
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
-    return gspread.authorize(creds)
-
-
 # Google Sheets config
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-SHEET_NAME = "UsedIPs"
 
 def get_gsheet_client():
-    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+    json_creds = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not json_creds:
+        raise ValueError("Missing GOOGLE_SERVICE_ACCOUNT_JSON environment variable.")
+    creds_dict = json.loads(json_creds)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
     return gspread.authorize(creds)
 
 def get_sheet():
     client = get_gsheet_client()
-    return client.open(SHEET_NAME).sheet1
+    return client.open("UsedIPs").sheet1
 
 def append_used_ip(ip, proxy):
     sheet = get_sheet()
