@@ -16,9 +16,26 @@ PROXY_LOG_FILE = "proxy_log.txt"
 MAX_WORKERS = 50
 REQUEST_TIMEOUT = 4
 
+import base64
+import os
+import json
+from oauth2client.service_account import ServiceAccountCredentials
+
+SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+
+def get_gsheet_client():
+    encoded_creds = os.getenv("GOOGLE_CREDENTIALS_BASE64")
+    if not encoded_creds:
+        raise Exception("Missing GOOGLE_CREDENTIALS_BASE64 environment variable.")
+    
+    creds_json = base64.b64decode(encoded_creds).decode("utf-8")
+    creds_dict = json.loads(creds_json)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
+    return gspread.authorize(creds)
+
+
 # Google Sheets config
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-CREDS_FILE = "service_account.json"
 SHEET_NAME = "UsedIPs"
 
 def get_gsheet_client():
