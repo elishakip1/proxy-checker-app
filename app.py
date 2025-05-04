@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, send_from_directory, jsonify
+from flask import Flask, request, render_template, send_from_directory, jsonify, redirect, url_for
 import os
 import time
 import requests
@@ -6,15 +6,52 @@ from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 import matplotlib.pyplot as plt
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
 
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 PROXY_LOG_FILE = "proxy_log.txt"
-USED_IPS_FILE = "used_ips.txt"
 MAX_WORKERS = 50
-REQUEST_TIMEOUT = 4  # seconds
+REQUEST_TIMEOUT = 4
 
+# Google Sheets config
+SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+CREDS_FILE = "service_account.json"
+SHEET_NAME = "UsedIPs"
+
+def get_gsheet_client():
+    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+    return gspread.authorize(creds)
+
+def get_sheet():
+    client = get_gsheet_client()
+    return client.open(SHEET_NAME).sheet1
+
+def append_used_ip(ip, proxy):
+    sheet = get_sheet()
+    sheet.append_row([ip, proxy, str(datetime.datetime.utcnow())])
+
+def is_ip_used(ip):
+    try:
+        sheet = get_sheet()
+        ips = sheet.col_values(1)
+        return ip in ips
+    except:
+        return False
+
+def remove_ip(ip):
+    sheet = get_sheet()
+    records = sheet.get_all_records()
+    for i, row in enumerate(records):
+        if row.get("IP") == ip:
+            sheet.delete_rows(i + 2)
+            break
+
+def list_used_ips():
+    sheet = get_sheet()
+    return sheet.get_all_records()
 
 def get_ip_from_proxy(proxy):
     try:
@@ -28,7 +65,6 @@ def get_ip_from_proxy(proxy):
     except Exception as e:
         print(f"❌ Failed to get IP from proxy {proxy}: {e}")
         return None
-
 
 def get_fraud_score(ip):
     try:
@@ -44,33 +80,6 @@ def get_fraud_score(ip):
         print(f"⚠️ Error checking Scamalytics for {ip}: {e}")
     return None
 
-
-def track_used_ip(proxy):
-    try:
-        ip = get_ip_from_proxy(proxy)
-        if ip:
-            with open(USED_IPS_FILE, "a") as f:
-                f.write(f"{ip},{proxy}\n")
-            return ip
-    except Exception as e:
-        print(f"Error tracking IP: {e}")
-    return None
-
-
-def is_ip_used(proxy):
-    try:
-        ip = get_ip_from_proxy(proxy)
-        if ip and os.path.exists(USED_IPS_FILE):
-            with open(USED_IPS_FILE, "r") as f:
-                for line in f:
-                    stored_ip, _ = line.strip().split(",", 1)
-                    if stored_ip == ip:
-                        return True
-    except:
-        pass
-    return False
-
-
 def single_check_proxy(proxy_line):
     ip = get_ip_from_proxy(proxy_line)
     if not ip:
@@ -78,20 +87,14 @@ def single_check_proxy(proxy_line):
 
     score = get_fraud_score(ip)
     if score == 0:
-        return proxy_line
+        return {"proxy": proxy_line, "ip": ip}
     return None
-
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     results = []
     message = ""
-    used_proxies = set()
-    
-    if os.path.exists(USED_IPS_FILE):
-        with open(USED_IPS_FILE, "r") as f:
-            used_proxies = {line.strip().split(",", 1)[1] for line in f if line.strip()}
-    
+
     if request.method == "POST":
         proxies = []
 
@@ -112,9 +115,10 @@ def index():
                 for future in as_completed(futures):
                     result = future.result()
                     if result:
+                        used = is_ip_used(result["ip"])
                         results.append({
-                            "proxy": result,
-                            "used": result in used_proxies or is_ip_used(result)
+                            "proxy": result["proxy"],
+                            "used": used
                         })
 
             if results:
@@ -134,15 +138,20 @@ def index():
 
     return render_template("index.html", results=results, message=message)
 
-
 @app.route("/track-used", methods=["POST"])
 def track_used():
     data = request.get_json()
     if data and "proxy" in data:
-        track_used_ip(data["proxy"])
+        ip = get_ip_from_proxy(data["proxy"])
+        if ip:
+            append_used_ip(ip, data["proxy"])
         return jsonify({"status": "success"})
     return jsonify({"status": "error"}), 400
 
+@app.route("/delete-used-ip/<ip>")
+def delete_used_ip(ip):
+    remove_ip(ip)
+    return redirect(url_for("admin"))
 
 @app.route("/admin")
 def admin():
@@ -178,13 +187,12 @@ def admin():
         plt.savefig("static/proxy_stats.png")
         plt.close()
 
-    return render_template("admin.html", logs=logs, stats=stats, graph_url="/static/proxy_stats.png")
-
+    used_ips = list_used_ips()
+    return render_template("admin.html", logs=logs, stats=stats, graph_url="/static/proxy_stats.png", used_ips=used_ips)
 
 @app.route('/static/<path:path>')
 def send_static(path):
     return send_from_directory('static', path)
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
