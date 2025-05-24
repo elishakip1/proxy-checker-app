@@ -2,11 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Proxy Checker</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
+        /* Custom styles for the app */
         body {
-            background-color: #f0f2f5;
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f2f5; /* Light gray background */
         }
         .container {
             margin-top: 50px;
@@ -14,33 +17,57 @@
         }
         .textarea-box {
             height: 200px;
+            resize: vertical; /* Allow vertical resizing */
         }
         .copy-btn {
-            float: right;
-            font-size: 12px;
+            font-size: 0.75rem; /* Smaller font for copy button */
         }
         .used-badge {
-            float: right;
-            color: #dc3545;
+            color: #dc3545; /* Red color for USED badge */
             font-weight: bold;
+        }
+        /* Custom styling for Bootstrap components to match Tailwind aesthetic */
+        .btn-primary {
+            @apply bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md;
+        }
+        .btn-outline-dark {
+            @apply border border-gray-400 text-gray-700 hover:bg-gray-100 py-1 px-3 rounded-md;
+        }
+        .alert-info {
+            @apply bg-blue-100 border border-blue-400 text-blue-700 px-4 py-3 rounded-md;
+        }
+        .list-group-item {
+            @apply flex justify-between items-center px-4 py-3 border-b border-gray-200 last:border-b-0;
+        }
+        .accordion-button {
+            @apply bg-gray-100 text-gray-800 font-semibold py-3 px-4 rounded-t-lg;
+        }
+        .accordion-button:not(.collapsed) {
+            @apply bg-blue-500 text-white;
+        }
+        .accordion-body {
+            @apply p-4 bg-white rounded-b-lg;
+        }
+        .form-control {
+            @apply block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500;
         }
     </style>
 </head>
-<body>
-    <div class="container bg-white p-4 rounded shadow-sm">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-            <h2 class="mb-0">Proxy Checker</h2>
-            <a href="/admin" class="btn btn-outline-dark btn-sm">🔧 Admin Dashboard</a>
+<body class="antialiased">
+    <div class="container mx-auto bg-white p-6 rounded-lg shadow-lg">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-2xl font-bold text-gray-800">Proxy Checker</h2>
+            <a href="/admin" class="btn-outline-dark">🔧 Admin Dashboard</a>
         </div>
 
         {% if message %}
-        <div class="alert alert-info">{{ message }}</div>
+        <div class="alert-info mb-4" role="alert">{{ message }}</div>
         {% endif %}
 
         <div class="accordion" id="proxyAccordion">
-            <div class="accordion-item">
+            <div class="accordion-item border border-gray-200 rounded-lg">
                 <h2 class="accordion-header" id="formHeading">
-                    <button class="accordion-button {% if results %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#proxyForm" aria-expanded="{{ 'false' if results else 'true' }}" aria-controls="proxyForm">
+                    <button class="accordion-button w-full text-left {% if results %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#proxyForm" aria-expanded="{{ 'false' if results else 'true' }}" aria-controls="proxyForm">
                         Paste or Upload Proxies
                     </button>
                 </h2>
@@ -48,14 +75,14 @@
                     <div class="accordion-body">
                         <form method="POST" enctype="multipart/form-data">
                             <div class="mb-3">
-                                <label for="proxyfile" class="form-label">Upload Proxy File</label>
+                                <label for="proxyfile" class="form-label block text-sm font-medium text-gray-700 mb-1">Upload Proxy File</label>
                                 <input type="file" class="form-control" name="proxyfile">
                             </div>
                             <div class="mb-3">
-                                <label for="proxytext" class="form-label">Or Paste Proxies</label>
+                                <label for="proxytext" class="form-label block text-sm font-medium text-gray-700 mb-1">Or Paste Proxies</label>
                                 <textarea name="proxytext" class="form-control textarea-box" placeholder="Paste proxies here (one per line)..."></textarea>
                             </div>
-                            <button type="submit" class="btn btn-primary w-100">Check Proxies</button>
+                            <button type="submit" class="btn-primary w-full">Check Proxies</button>
                         </form>
                     </div>
                 </div>
@@ -63,39 +90,81 @@
         </div>
 
         {% if results %}
-        <hr>
-        <h5 class="mt-4">✅ Good Proxies (Fraud Score 0)</h5>
-        <ul class="list-group mt-2">
+        <hr class="my-6 border-gray-300">
+        <h5 class="text-xl font-semibold text-gray-800 mb-3">✅ Good Proxies (Fraud Score 0)</h5>
+        <ul class="list-group border border-gray-200 rounded-lg overflow-hidden">
             {% for item in results %}
-            <li class="list-group-item d-flex justify-content-between align-items-center">
-                <span id="proxy-{{ loop.index }}">{{ item.proxy }}</span>
+            <li class="list-group-item">
+                <span id="proxy-{{ loop.index }}" data-full-proxy="{{ item.proxy }}" class="text-gray-900 font-mono">
+                    {% set parts = item.proxy.split(':') %}
+                    {% if parts|length >= 3 %}
+                        {# Display host:port: and then mask the rest with asterisks #}
+                        {% set visible_prefix = parts[0] + ':' + parts[1] + ':' %}
+                        {% set masked_section_length = item.proxy|length - visible_prefix|length %}
+                        {{ visible_prefix }}{{ '*' * masked_section_length }}
+                    {% else %}
+                        {# If less than 3 parts (e.g., host:port or just host), display as is #}
+                        {{ item.proxy }}
+                    {% endif %}
+                </span>
                 {% if item.used %}
-                <span class="used-badge">USED</span>
+                <span class="used-badge text-red-600 text-xs">USED</span>
                 {% else %}
-                <button class="btn btn-sm btn-outline-secondary copy-btn" onclick="copyToClipboard('proxy-{{ loop.index }}'); trackUsedProxy('{{ item.proxy }}')">Copy</button>
+                <button class="btn-outline-dark copy-btn" onclick="copyToClipboard('proxy-{{ loop.index }}'); trackUsedProxy('{{ item.proxy }}')">Copy</button>
                 {% endif %}
             </li>
             {% endfor %}
         </ul>
-        <p class="mt-3 text-muted text-end">You will be redirected to the homepage in 5 minutes...</p>
+        <p class="mt-4 text-sm text-gray-500 text-right">You will be redirected to the homepage in 5 minutes...</p>
         {% endif %}
     </div>
 
     <script>
+        /**
+         * Copies the full proxy string from a data attribute to the clipboard.
+         * @param {string} elementId - The ID of the span element containing the proxy.
+         */
         function copyToClipboard(elementId) {
-            var text = document.getElementById(elementId).innerText;
-            navigator.clipboard.writeText(text).then(function() {
-                const target = document.getElementById(elementId);
-                if (!target.parentElement.querySelector('.text-success')) {
+            // Get the span element
+            var spanElement = document.getElementById(elementId);
+            // Get the full proxy from the data-full-proxy attribute
+            var textToCopy = spanElement.getAttribute('data-full-proxy');
+
+            // Create a temporary textarea element to facilitate copying to clipboard
+            var tempTextArea = document.createElement("textarea");
+            tempTextArea.value = textToCopy;
+            // Append the textarea to the document body (it doesn't need to be visible)
+            document.body.appendChild(tempTextArea);
+            // Select the text in the textarea
+            tempTextArea.select();
+            // Execute the copy command
+            try {
+                document.execCommand('copy');
+                // Provide visual feedback to the user
+                if (!spanElement.parentElement.querySelector('.text-green-600')) { // Check if message already exists
                     let copiedMsg = document.createElement("span");
-                    copiedMsg.className = "text-success ms-2 small";
+                    copiedMsg.className = "text-green-600 ml-2 text-xs font-bold"; // Tailwind classes for success message
                     copiedMsg.innerText = "✔ Copied!";
-                    copiedMsg.style.fontWeight = "bold";
-                    target.parentElement.appendChild(copiedMsg);
+                    spanElement.parentElement.appendChild(copiedMsg);
+                    // Remove the "Copied!" message after 2 seconds
+                    setTimeout(() => {
+                        copiedMsg.remove();
+                    }, 2000);
                 }
-            });
+            } catch (err) {
+                console.error('Failed to copy text: ', err);
+                // Fallback for browsers that don't support execCommand or in case of error
+                // You might want to show a more user-friendly error message here
+            } finally {
+                // Clean up: remove the temporary textarea
+                document.body.removeChild(tempTextArea);
+            }
         }
 
+        /**
+         * Sends a POST request to track a proxy as "used".
+         * @param {string} proxy - The full proxy string to track.
+         */
         function trackUsedProxy(proxy) {
             fetch('/track-used', {
                 method: 'POST',
@@ -106,10 +175,11 @@
             }).catch(error => console.error('Error tracking used proxy:', error));
         }
 
+        // Redirect to homepage after 5 minutes if results are displayed
         {% if results %}
         setTimeout(function() {
             window.location.href = "/";
-        }, 300000);
+        }, 300000); // 300000 milliseconds = 5 minutes
         {% endif %}
     </script>
 
