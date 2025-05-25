@@ -27,7 +27,7 @@
         .proxy-masked {
             font-family: monospace;
         }
-        /* New disabled styles */
+        /* Disabled styles */
         a.disabled {
             pointer-events: none;
             color: #6c757d !important;
@@ -44,7 +44,6 @@
     <div class="container bg-white p-4 rounded shadow-sm">
         <div class="d-flex justify-content-between align-items-center mb-3">
             <h2 class="mb-0">Proxy Checker(V2.1)</h2>
-            <!-- Modified Admin Dashboard link -->
             <a href="#" class="btn btn-outline-secondary btn-sm disabled">⚡Upgrade</a>
         </div>
 
@@ -61,7 +60,6 @@
                 </h2>
                 <div id="proxyForm" class="accordion-collapse collapse {% if not results %}show{% endif %}" aria-labelledby="formHeading" data-bs-parent="#proxyAccordion">
                     <div class="accordion-body">
-                        <!-- Preserved form elements -->
                         <form method="POST" enctype="multipart/form-data">
                             <div class="mb-3">
                                 <label for="proxyfile" class="form-label">Upload Proxy File</label>
@@ -103,10 +101,16 @@
     </div>
 
     <script>
+        let trackedProxies = new Set();
+
         function copyToClipboard(elementId, clickedButton) {
             const element = document.getElementById(elementId);
             const fullProxy = element.getAttribute('data-full-proxy');
             
+            // Immediately disable clicked button
+            clickedButton.disabled = true;
+            clickedButton.classList.add('disabled');
+
             navigator.clipboard.writeText(fullProxy).then(() => {
                 if (!element.parentElement.querySelector('.text-success')) {
                     const copiedMsg = document.createElement("span");
@@ -117,7 +121,7 @@
                 }
             });
 
-            // Disable all other copy buttons
+            // Disable all other buttons
             const allButtons = document.querySelectorAll('.copy-btn');
             allButtons.forEach(button => {
                 if (button !== clickedButton) {
@@ -126,18 +130,19 @@
                 }
             });
 
-            // Re-enable after 20 seconds
+            // Re-enable after 60 seconds
             setTimeout(() => {
                 allButtons.forEach(button => {
-                    if (button !== clickedButton) {
-                        button.disabled = false;
-                        button.classList.remove('disabled');
-                    }
+                    button.disabled = false;
+                    button.classList.remove('disabled');
                 });
             }, 60000);
         }
 
         function trackUsedProxy(proxy) {
+            if (trackedProxies.has(proxy)) return;
+            trackedProxies.add(proxy);
+            
             fetch('/track-used', {
                 method: 'POST',
                 headers: {
