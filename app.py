@@ -172,6 +172,7 @@ worker_thread.start()
 def index():
     results = []
     message = ""
+    task_id = None  # Initialize task_id variable
 
     if request.method == "POST":
         proxies = []
@@ -190,14 +191,14 @@ def index():
         # Validate proxy count
         if len(proxies) > MAX_PROXIES_PER_CHECK:
             message = f"⚠️ Maximum {MAX_PROXIES_PER_CHECK} proxies allowed per check."
-            return render_template("index.html", message=message, results=None)
+            return render_template("index.html", message=message, results=None, task_id=None)
         
         # Check queue status
         with task_queue_lock:
             queue_size = len(task_queue)
             if queue_size >= MAX_QUEUE_SIZE:
                 message = "⚠️ Queue is full. Please try again later."
-                return render_template("index.html", message=message, results=None)
+                return render_template("index.html", message=message, results=None, task_id=None)
             
             # Create task
             task_id = f"{time.time()}_{uuid.uuid4().hex}"
@@ -206,14 +207,14 @@ def index():
             position = queue_size + 1  # +1 because we just added this task
             
             # Create a response object to set cookie
-            response = make_response(render_template("index.html", message=message, results=None))
+            response = make_response(render_template("index.html", message=message, results=None, task_id=task_id))
             response.set_cookie('task_id', task_id)
             return response
 
-    # Check if we have completed task results
-    task_id = request.cookies.get('task_id')
-    if task_id and task_id in task_status and task_status[task_id] == 'completed':
-        results = task_results.get(task_id, [])
+    # Check if we have completed task results from cookie
+    cookie_task_id = request.cookies.get('task_id')
+    if cookie_task_id and cookie_task_id in task_status and task_status[cookie_task_id] == 'completed':
+        results = task_results.get(cookie_task_id, [])
         if results:
             with open(GOOD_PROXIES_FILE, "w") as out:
                 for item in results:
@@ -228,11 +229,11 @@ def index():
             message = "⚠️ No good proxies found."
             
         # Clear task cookie using a response object
-        response = make_response(render_template("index.html", results=results, message=message))
+        response = make_response(render_template("index.html", results=results, message=message, task_id=None))
         response.set_cookie('task_id', '', expires=0)
         return response
 
-    return render_template("index.html", results=results, message=message)
+    return render_template("index.html", results=results, message=message, task_id=None)
 
 @app.route("/queue-status")
 def queue_status():
