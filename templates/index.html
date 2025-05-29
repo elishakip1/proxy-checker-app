@@ -38,6 +38,30 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
+        .proxy-counter {
+            position: absolute;
+            right: 20px;
+            bottom: 10px;
+            font-size: 0.85rem;
+            color: #6c757d;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        .counter-error {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .counter-warning {
+            color: #ffc107;
+            font-weight: bold;
+        }
+        .counter-ok {
+            color: #198754;
+        }
+        .textarea-container {
+            position: relative;
+        }
     </style>
 </head>
 <body>
@@ -60,14 +84,18 @@
                 </h2>
                 <div id="proxyForm" class="accordion-collapse collapse {% if not results %}show{% endif %}" aria-labelledby="formHeading" data-bs-parent="#proxyAccordion">
                     <div class="accordion-body">
-                        <form method="POST" enctype="multipart/form-data">
+                        <form method="POST" enctype="multipart/form-data" id="proxyFormElement">
                             <div class="mb-3">
                                 <label for="proxyfile" class="form-label">Upload Proxy File</label>
-                                <input type="file" class="form-control" name="proxyfile" onchange="checkFileLines(this)">
+                                <input type="file" class="form-control" name="proxyfile" id="proxyfile" onchange="checkFileLines(this)">
+                                <div class="form-text" id="fileCounter">File contains: 0 proxies</div>
                             </div>
                             <div class="mb-3">
                                 <label for="proxytext" class="form-label">Or Paste Proxies</label>
-                                <textarea name="proxytext" id="proxytext" class="form-control textarea-box" placeholder="Paste proxies here (one per line, max 50 lines)..." oninput="limitProxyLines(this)"></textarea>
+                                <div class="textarea-container">
+                                    <textarea name="proxytext" id="proxytext" class="form-control textarea-box" placeholder="Paste proxies here (one per line, max 50 lines)..." oninput="updateProxyCounter(this)"></textarea>
+                                    <div class="proxy-counter" id="proxyCounter">0/50</div>
+                                </div>
                             </div>
                             <button type="submit" id="submitBtn" class="btn btn-primary w-100">Check Proxies</button>
                         </form>
@@ -102,13 +130,32 @@
 
     <script>
         let trackedProxies = new Set();
-        const MAX_LINES = 50; // Client-side limit
+        const MAX_LINES = 50;
+        let fileLineCount = 0;
 
-        function limitProxyLines(textarea) {
-            const lines = textarea.value.split('\n');
-            if (lines.length > MAX_LINES) {
-                textarea.value = lines.slice(0, MAX_LINES).join('\n');
-                alert(`You can only enter a maximum of ${MAX_LINES} proxies at a time.`);
+        function updateProxyCounter(textarea) {
+            const lines = textarea.value.split('\n').filter(line => line.trim() !== '');
+            const count = lines.length;
+            const counter = document.getElementById('proxyCounter');
+            counter.textContent = `${count}/${MAX_LINES}`;
+            
+            // Update styling based on count
+            if (count > MAX_LINES) {
+                counter.className = 'proxy-counter counter-error';
+                document.getElementById('submitBtn').disabled = true;
+            } else if (count === MAX_LINES) {
+                counter.className = 'proxy-counter counter-warning';
+                document.getElementById('submitBtn').disabled = false;
+            } else {
+                counter.className = 'proxy-counter counter-ok';
+                document.getElementById('submitBtn').disabled = false;
+            }
+            
+            // Update file counter if textarea has content
+            if (count > 0) {
+                document.getElementById('fileCounter').textContent = "File upload will be ignored";
+            } else {
+                document.getElementById('fileCounter').textContent = `File contains: ${fileLineCount} proxies`;
             }
         }
 
@@ -117,14 +164,27 @@
             if (file) {
                 const reader = new FileReader();
                 reader.onload = function(e) {
-                    const lines = e.target.result.split('\n');
-                    if (lines.length > MAX_LINES) {
-                        alert(`The uploaded file contains more than ${MAX_LINES} lines. Only the first ${MAX_LINES} lines will be processed by the server.`);
-                        // Note: Client-side file input cannot be directly trimmed before submission.
-                        // The server-side (app.py) will enforce the hard limit.
+                    const lines = e.target.result.split('\n').filter(line => line.trim() !== '');
+                    fileLineCount = lines.length;
+                    const fileCounter = document.getElementById('fileCounter');
+                    
+                    if (fileLineCount > MAX_LINES) {
+                        fileCounter.innerHTML = `<span class="counter-error">File contains: ${fileLineCount} proxies (max ${MAX_LINES})</span>`;
+                        document.getElementById('submitBtn').disabled = true;
+                    } else {
+                        fileCounter.innerHTML = `File contains: <span class="counter-ok">${fileLineCount}</span> proxies`;
+                        document.getElementById('submitBtn').disabled = false;
                     }
+                    
+                    // Clear textarea when file is selected
+                    document.getElementById('proxytext').value = '';
+                    document.getElementById('proxyCounter').textContent = '0/50';
+                    document.getElementById('proxyCounter').className = 'proxy-counter counter-ok';
                 };
                 reader.readAsText(file);
+            } else {
+                fileLineCount = 0;
+                document.getElementById('fileCounter').textContent = "File contains: 0 proxies";
             }
         }
 
@@ -177,8 +237,10 @@
             }).catch(error => console.error('Error tracking used proxy:', error));
         }
 
+        // Initialize counter
+        document.getElementById('proxyCounter').textContent = '0/50';
+        
         {% if results %}
-        // Redirect to homepage after 5 minutes if results are shown
         setTimeout(function() {
             window.location.href = "/";
         }, 300000);
