@@ -236,7 +236,7 @@
             if (position === 1) {
                 document.getElementById('queueMessage').textContent = 'Processing your request...';
             } else {
-                document.getElementById('queueMessage').textContent = 'Waiting in queue...';
+                document.getElementById('queueMessage').textContent = `Waiting in queue (position ${position} of ${size})...`;
             }
         }
 
@@ -244,20 +244,32 @@
             clearInterval(queueCheckInterval);
             queueCheckInterval = setInterval(function() {
                 fetch(`/queue-status?task_id=${currentTaskId}`)
-                    .then(response => response.json())
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Network response was not ok');
+                        }
+                        return response.json();
+                    })
                     .then(data => {
+                        console.log('Queue status:', data);
                         if (data.status === 'processing') {
                             updateQueuePosition(1, data.queue_size);
                         } else if (data.status === 'queued') {
                             updateQueuePosition(data.position, data.queue_size);
                         } else if (data.status === 'completed') {
                             clearInterval(queueCheckInterval);
+                            console.log('Task completed, reloading page...');
                             // Refresh the page to show results
                             window.location.reload();
+                        } else if (data.status === 'not_found') {
+                            console.error('Task not found, stopping polling');
+                            clearInterval(queueCheckInterval);
+                            document.getElementById('queueMessage').textContent = 'Error: Task not found. Please try again.';
                         }
                     })
                     .catch(error => {
                         console.error('Queue polling error:', error);
+                        document.getElementById('queueMessage').textContent = 'Error checking status. Please try again.';
                     });
             }, 3000);
         }
@@ -319,6 +331,7 @@
 
         // If we have a task ID from the server, start polling immediately
         {% if task_id %}
+            console.log('Starting queue polling for task:', "{{ task_id }}");
             currentTaskId = "{{ task_id }}";
             document.getElementById('queueStatus').style.display = 'block';
             document.getElementById('submitBtn').disabled = true;
