@@ -27,14 +27,13 @@
         .proxy-masked {
             font-family: monospace;
         }
-        /* Disabled styles */
-        a.disabled {
+        a.disabled { /* For general disabled links */
             pointer-events: none;
             color: #6c757d !important;
             border-color: #6c757d !important;
             opacity: 0.7;
         }
-        .copy-btn.disabled {
+        .copy-btn.disabled { /* Specific to copy buttons */
             opacity: 0.5;
             cursor: not-allowed;
         }
@@ -44,17 +43,20 @@
             border-radius: 5px;
             padding: 10px 15px;
             margin-bottom: 15px;
-            display: none;
+            display: none; /* Hidden by default */
         }
         .queue-badge {
             font-size: 0.9rem;
             padding: 5px 10px;
         }
-        .spinner-border {
+        .spinner-border { /* For loading spinner */
             width: 1.2rem;
             height: 1.2rem;
             margin-right: 8px;
             vertical-align: text-top;
+        }
+        .form-text.text-danger { /* Error messages for form inputs */
+            font-size: 0.875em;
         }
     </style>
 </head>
@@ -65,22 +67,19 @@
             <a href="#" class="btn btn-outline-secondary btn-sm disabled">⚡Upgrade</a>
         </div>
 
-        {% if message %}
-        <div class="alert alert-info">{{ message }}</div>
+        {% if message and not results %} <div class="alert alert-info" id="serverMessage">{{ message }}</div>
         {% endif %}
 
-        {% if task_id %}
-        <input type="hidden" id="taskId" value="{{ task_id }}">
-        {% endif %}
-        <div class="queue-status" id="queueStatus">
+        <div class="queue-status" id="queueStatusDisplay">
             <div class="d-flex justify-content-between align-items-center">
                 <div>
-                    <span class="spinner-border spinner-border-sm"></span>
-                    <span id="queueMessage">Processing your request...</span>
+                    <span class="spinner-border spinner-border-sm" id="queueSpinner" role="status" aria-hidden="true"></span>
+                    <span id="queueMessageText">Processing your request...</span>
                 </div>
-                <span class="badge bg-primary queue-badge" id="queuePosition">Position: 1/1</span>
+                <span class="badge bg-primary queue-badge" id="queuePositionText">Position: 1/1</span>
             </div>
         </div>
+
 
         <div class="accordion" id="proxyAccordion">
             <div class="accordion-item">
@@ -91,22 +90,20 @@
                 </h2>
                 <div id="proxyForm" class="accordion-collapse collapse {% if not results %}show{% endif %}" aria-labelledby="formHeading" data-bs-parent="#proxyAccordion">
                     <div class="accordion-body">
-                        <form method="POST" enctype="multipart/form-data" id="proxyFormElement">
+                        <form method="POST" enctype="multipart/form-data" id="mainProxyForm">
                             <div class="mb-3">
-                                <label for="proxyfile" class="form-label">Upload Proxy File</label>
-                                <input type="file" class="form-control" name="proxyfile" id="proxyfile">
-                                <div class="form-text text-danger" id="fileError"></div>
+                                <label for="proxyfile" class="form-label">Upload Proxy File (.txt)</label>
+                                <input type="file" class="form-control" name="proxyfile" id="proxyfile" accept=".txt">
+                                <div class="form-text text-danger" id="fileError" style="display: none;"></div>
                             </div>
                             <div class="mb-3">
-                                <label for="proxytext" class="form-label">Or Paste Proxies</label>
-                                <textarea name="proxytext" class="form-control textarea-box" 
-                                          id="proxytext" 
-                                          placeholder="Paste proxies here (one per line)..."
-                                          oninput="validateProxyCount()"></textarea>
-                                <div class="form-text text-danger" id="proxyError">Maximum 50 proxies allowed</div>
+                                <label for="proxytext" class="form-label">Or Paste Proxies (max 50 lines)</label>
+                                <textarea name="proxytext" class="form-control textarea-box" id="proxytext" placeholder="Paste proxies here (one per line)..."></textarea>
+                                <div class="form-text text-danger" id="proxyTextError" style="display: none;">Maximum 50 proxies allowed.</div>
+                                <div class="form-text" id="lineCounter">Lines: 0/50</div>
                             </div>
-                            <button type="submit" class="btn btn-primary w-100" id="submitBtn">
-                                <span class="spinner-border spinner-border-sm d-none" id="submitSpinner"></span>
+                            <button type="submit" class="btn btn-primary w-100" id="submitProxyButton">
+                                <span class="spinner-border spinner-border-sm d-none" id="submitSpinner" role="status" aria-hidden="true"></span>
                                 Check Proxies
                             </button>
                         </form>
@@ -117,6 +114,9 @@
 
         {% if results %}
         <hr>
+         {% if message %}
+        <div class="alert alert-info">{{ message }}</div>
+        {% endif %}
         <h5 class="mt-4">✅ Good Proxies (Fraud Score 0)</h5>
         <ul class="list-group mt-2">
             {% for item in results %}
@@ -140,345 +140,154 @@
     </div>
 
     <script>
+        const MAX_PROXIES = 50;
         let trackedProxies = new Set();
-        let queuePosition = 0;
-        let queueSize = 1;
-        let queueCheckInterval;
-        let currentTaskId = null;
+        // Variable to simulate if a check is "globally" ongoing (for client-side button disabling)
+        // In a real scenario, this would be fetched from the server or managed via WebSockets.
+        let isServerBusy = false; 
+        let currentTaskSubmitted = false;
 
-        // Initialize form validation
         document.addEventListener('DOMContentLoaded', function() {
-            validateProxyCount();
-            document.getElementById('proxyError').style.display = 'none';
-            document.getElementById('fileError').style.display = 'none';
+            const proxyTextArea = document.getElementById('proxytext');
+            const lineCounter = document.getElementById('lineCounter');
+            const proxyTextError = document.getElementById('proxyTextError');
+            const proxyFileInput = document.getElementById('proxyfile');
+            const fileError = document.getElementById('fileError');
+            const submitButton = document.getElementById('submitProxyButton');
+            const submitSpinner = document.getElementById('submitSpinner');
+            const mainProxyForm = document.getElementById('mainProxyForm');
             
-            // Handle form submission
-            document.getElementById('proxyFormElement').addEventListener('submit', function(e) {
-                e.preventDefault();
+            const queueStatusDisplay = document.getElementById('queueStatusDisplay');
+            const queueMessageText = document.getElementById('queueMessageText');
+            const queuePositionText = document.getElementById('queuePositionText');
+            const queueSpinner = document.getElementById('queueSpinner');
+
+
+            function updateLineCount() {
+                const lines = proxyTextArea.value.split('\n').filter(line => line.trim() !== '');
+                const count = lines.length;
+                lineCounter.textContent = `Lines: ${count}/${MAX_PROXIES}`;
+                if (count > MAX_PROXIES) {
+                    proxyTextError.style.display = 'block';
+                    lineCounter.classList.add('text-danger');
+                    return false;
+                } else {
+                    proxyTextError.style.display = 'none';
+                    lineCounter.classList.remove('text-danger');
+                    return true;
+                }
+            }
+
+            proxyTextArea.addEventListener('input', updateLineCount);
+            updateLineCount(); // Initial check
+
+            proxyFileInput.addEventListener('change', function(event) {
+                fileError.style.display = 'none'; // Reset error
+                const file = event.target.files[0];
+                if (file && file.type === "text/plain") {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const lines = e.target.result.split('\n').filter(line => line.trim() !== '');
+                        if (lines.length > MAX_PROXIES) {
+                            fileError.textContent = `File contains ${lines.length} proxies. Maximum ${MAX_PROXIES} allowed.`;
+                            fileError.style.display = 'block';
+                            proxyFileInput.value = ""; // Clear the invalid file
+                        } else {
+                             // Optionally, you could paste these lines into the textarea if desired,
+                             // or handle them exclusively as a file upload on the backend.
+                             // For now, just validating count.
+                        }
+                    };
+                    reader.readAsText(file);
+                } else if (file) {
+                    fileError.textContent = 'Invalid file type. Please upload a .txt file.';
+                    fileError.style.display = 'block';
+                    proxyFileInput.value = ""; // Clear the invalid file
+                }
+            });
+
+            mainProxyForm.addEventListener('submit', function(event) {
+                // Client-side validation before submission
+                const isTextValid = updateLineCount();
+                let isFileValid = true; // Assume valid if no file or file check passed earlier
+
+                // Re-check file if one is selected, as user might have changed it
+                if (proxyFileInput.files.length > 0) {
+                    const file = proxyFileInput.files[0];
+                     const linesInFile = (proxyFileInput._linesCount || 0); // A bit hacky, better to re-read or store
+                     // This simplistic re-check for file on submit might need a more robust solution
+                     // For now, we rely on the 'change' event validation primarily for files.
+                     // The backend MUST re-validate anyway.
+                }
                 
-                if (!validateProxyCount()) {
+                if (!isTextValid || !isFileValid) {
+                    event.preventDefault(); // Stop submission if client-side validation fails
                     return;
                 }
-                
-                // Disable button and show spinner
-                document.getElementById('submitBtn').disabled = true;
-                document.getElementById('submitBtn').classList.add('disabled');
-                document.getElementById('submitSpinner').classList.remove('d-none');
-                
-                // Create form data
-                const formData = new FormData(this);
-                
-                // Show queue status
-                document.getElementById('queueStatus').style.display = 'block';
-                document.getElementById('queueMessage').textContent = 'Submitting your request...'; // Initial submission message
-                if(document.getElementById('queuePosition')) {
-                    document.getElementById('queuePosition').style.display = 'block'; // Ensure position is visible
+
+                if (currentTaskSubmitted || isServerBusy) {
+                    event.preventDefault();
+                    // Update queue message to show user they are waiting
+                    queueStatusDisplay.style.display = 'block';
+                    queueSpinner.style.display = 'inline-block';
+                    queueMessageText.textContent = "Another check is in progress or server is busy. Your request will be queued.";
+                    // This part is tricky without actual server queue info. We simulate it.
+                    // If your app.py becomes truly async with a queue, this client-side logic
+                    // would poll an endpoint for the actual queue position.
+                    queuePositionText.textContent = "Position: Waiting..."; 
+                    // Grey out button more permanently until server is free
+                    submitButton.disabled = true;
+                    // You might want to try submitting after a delay or notify user to try later
+                    return;
                 }
 
-                // Submit the form via AJAX
-                fetch('/', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(response => response.text())
-                .then(html => {
-                    // Parse the HTML response
-                    const parser = new DOMParser();
-                    const doc = parser.parseFromString(html, 'text/html');
-                    const taskIdElement = doc.querySelector('#taskId');
-                    
-                    if (taskIdElement) {
-                        currentTaskId = taskIdElement.value;
-                        startQueuePolling();
-                    } else {
-                        // If no task ID, it might be an immediate error (e.g. queue full) or a bug
-                        console.error('Task ID element not found in POST response. Polling cannot start.');
-                        document.getElementById('queueStatus').style.display = 'block'; // Ensure it's visible
-                        
-                        // Check for specific error messages from Flask if available in the response 'doc'
-                        const alertInfo = doc.querySelector('.alert.alert-info');
-                        if (alertInfo && alertInfo.textContent.includes('⚠️')) { // Heuristic for Flask error messages
-                             document.getElementById('queueMessage').textContent = alertInfo.textContent;
-                        } else {
-                             document.getElementById('queueMessage').textContent = 'Error: Could not start the proxy check. Task ID missing. Please refresh and try again.';
-                        }
+                // If all good, show processing state
+                submitButton.disabled = true;
+                submitSpinner.classList.remove('d-none');
+                submitButton.childNodes[submitButton.childNodes.length -1].textContent = ' Checking...'; // Text after spinner
 
-                        if (document.getElementById('queuePosition')) {
-                            document.getElementById('queuePosition').style.display = 'none'; // Hide position part
-                        }
-                        // Re-enable the form
-                        const submitBtn = document.getElementById('submitBtn');
-                        if (submitBtn) {
-                            submitBtn.disabled = false;
-                            submitBtn.classList.remove('disabled');
-                        }
-                        const submitSpinner = document.getElementById('submitSpinner');
-                        if (submitSpinner) {
-                             submitSpinner.classList.add('d-none');
-                        }
-                        // Optionally hide the queue status bar after a delay or if it's a permanent error
-                        // For now, we leave it to show the error message.
-                    }
-                })
-                .catch(error => {
-                    console.error('Form submission error:', error);
-                    document.getElementById('queueMessage').textContent = 'Error submitting request. Please try again.';
-                     // Re-enable the form
-                    const submitBtn = document.getElementById('submitBtn');
-                    if (submitBtn) {
-                        submitBtn.disabled = false;
-                        submitBtn.classList.remove('disabled');
-                    }
-                    const submitSpinner = document.getElementById('submitSpinner');
-                    if (submitSpinner) {
-                        submitSpinner.classList.add('d-none');
-                    }
-                });
+                queueStatusDisplay.style.display = 'block';
+                queueSpinner.style.display = 'inline-block';
+                queueMessageText.textContent = "Submitting your proxies for checking...";
+                queuePositionText.textContent = "Position: 1/1"; // Assuming it's the current one being processed
+                currentTaskSubmitted = true; 
+                // isServerBusy = true; // Simulate server becoming busy
+                
+                // The form will now submit. When the page reloads with results,
+                // currentTaskSubmitted and isServerBusy will be reset.
             });
+
+            // Simulate server becoming free after some time (for demo of button re-enabling)
+            // In a real app, this would be driven by actual server status.
+            // This part is very illustrative.
+            // {% if not results and not message %} // Only if it's a fresh page load
+            // setTimeout(() => {
+            //     isServerBusy = false;
+            //     if (!currentTaskSubmitted) { // Only re-enable if no current task from this client
+            //         submitButton.disabled = false;
+            //         queueStatusDisplay.style.display = 'none';
+            //     }
+            // }, 10000); // Simulate server freeing up after 10s
+            // {% endif %}
+
+            // If the page loads with results, it means a check was completed.
+             {% if results %}
+             currentTaskSubmitted = false;
+             isServerBusy = false; // Assume server is free after a task completes
+             if (queueStatusDisplay) queueStatusDisplay.style.display = 'none';
+             if (submitButton) {
+                submitButton.disabled = false;
+                submitSpinner.classList.add('d-none');
+                submitButton.childNodes[submitButton.childNodes.length -1].textContent = ' Check Proxies';
+             }
+             {% endif %}
         });
 
-        function validateProxyCount() {
-            const textarea = document.getElementById('proxytext');
-            const fileInput = document.getElementById('proxyfile');
-            const proxyError = document.getElementById('proxyError');
-            const fileError = document.getElementById('fileError');
-            const submitBtn = document.getElementById('submitBtn');
-            
-            let valid = true;
-            
-            // Reset errors
-            proxyError.style.display = 'none';
-            fileError.style.display = 'none';
-            
-            // Check textarea
-            if (textarea.value) {
-                const lines = textarea.value.split('\n').filter(line => line.trim() !== '');
-                if (lines.length > 50) {
-                    proxyError.style.display = 'block';
-                    valid = false;
-                }
-            }
-            
-            // Check file (asynchronously)
-            if (fileInput.files.length > 0) {
-                const file = fileInput.files[0];
-                const reader = new FileReader();
-                
-                reader.onload = function(e) {
-                    const content = e.target.result;
-                    const lines = content.split('\n').filter(line => line.trim() !== '');
-                    
-                    if (lines.length > 50) {
-                        fileError.textContent = 'File contains more than 50 proxies';
-                        fileError.style.display = 'block';
-                        submitBtn.disabled = true;
-                        submitBtn.classList.add('disabled');
-                    } else {
-                        fileError.style.display = 'none';
-                        // Re-evaluate overall validity if file is OK
-                        if (textarea.value) { // if textarea also has content, recheck its validity
-                             const textLines = textarea.value.split('\n').filter(line => line.trim() !== '');
-                             if (textLines.length <= 50) { // if textarea is also valid or empty
-                                submitBtn.disabled = false;
-                                submitBtn.classList.remove('disabled');
-                             } else { // textarea invalid
-                                proxyError.style.display = 'block';
-                                submitBtn.disabled = true;
-                                submitBtn.classList.add('disabled');
-                             }
-                        } else { // textarea is empty, file is valid
-                            submitBtn.disabled = false;
-                            submitBtn.classList.remove('disabled');
-                        }
-                    }
-                };
-                
-                reader.readAsText(file);
-                // Since file reading is async, we might disable button proactively
-                // and let onload re-enable if valid. For simplicity, current logic is mostly fine.
-                // But to be safe, if a file is selected, we wait for its validation.
-                // The initial `valid` variable still holds textarea status.
-                if (!valid) { // If textarea already invalid
-                    submitBtn.disabled = true;
-                    submitBtn.classList.add('disabled');
-                }
-                return valid; // returns textarea validity, file check is async.
-            }
-            
-            submitBtn.disabled = !valid;
-            if (!valid) {
-                submitBtn.classList.add('disabled');
-            } else {
-                submitBtn.classList.remove('disabled');
-            }
-            
-            return valid;
-        }
-
-        function updateQueuePosition(position, size) {
-            queuePosition = position;
-            queueSize = size;
-            document.getElementById('queuePosition').textContent = `Position: ${position}/${size}`;
-            
-            if (position === 1 && size > 0) { // Changed from position === 1 to ensure it's processing
-                document.getElementById('queueMessage').textContent = 'Processing your request...';
-            } else if (size > 0) {
-                document.getElementById('queueMessage').textContent = `Waiting in queue (position ${position} of ${size})...`;
-            }
-        }
-
-        function startQueuePolling() {
-            clearInterval(queueCheckInterval);
-            // Initial message while polling starts
-            document.getElementById('queueMessage').textContent = 'Checking task status...';
-
-            queueCheckInterval = setInterval(function() {
-                fetch(`/queue-status?task_id=${currentTaskId}`)
-                    .then(response => {
-                        if (!response.ok) {
-                            throw new Error('Network response was not ok: ' + response.statusText);
-                        }
-                        return response.json();
-                    })
-                    .then(data => {
-                        if (data.status === 'processing') {
-                            updateQueuePosition(1, data.queue_size); // Assuming processing means position 1
-                        } else if (data.status === 'queued') {
-                            updateQueuePosition(data.position, data.queue_size);
-                        } else if (data.status === 'completed') {
-                            clearInterval(queueCheckInterval);
-                            document.getElementById('queueMessage').textContent = 'Fetching results...';
-                            fetchResults();
-                        } else if (data.status === 'not_found') {
-                            console.error('Task not found, stopping polling');
-                            clearInterval(queueCheckInterval);
-                            document.getElementById('queueMessage').textContent = 'Error: Task not found. Please try again.';
-                        } else {
-                            // Handle other potential statuses or unknown responses
-                             console.warn('Unknown queue status:', data.status);
-                             document.getElementById('queueMessage').textContent = 'Received an unknown status. Checking again...';
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Queue polling error:', error);
-                        document.getElementById('queueMessage').textContent = 'Error checking status. Retrying...';
-                        // Optionally stop polling after several errors:
-                        // clearInterval(queueCheckInterval);
-                        // document.getElementById('queueMessage').textContent = 'Error checking status. Please refresh and try again.';
-                    });
-            }, 3000);
-        }
-        
-        function fetchResults() {
-            fetch(`/get-results?task_id=${currentTaskId}`)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('Network response was not ok while fetching results.');
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.results) {
-                        updateResultsPage(data);
-                    } else {
-                        // If results are not found even after 'completed' status
-                        console.error('Results not found for completed task:', currentTaskId, data.error || '');
-                        document.getElementById('queueMessage').textContent = data.error || 'Error: Could not retrieve results. Please try again.';
-                        // Potentially hide the queue status bar after a delay
-                        setTimeout(() => {
-                             document.getElementById('queueStatus').style.display = 'none';
-                        }, 5000);
-                         window.location.reload(); // Fallback to reload if results aren't parsable
-                    }
-                })
-                .catch(error => {
-                    console.error('Error fetching results:', error);
-                    document.getElementById('queueMessage').textContent = 'Error fetching results. Please refresh the page.';
-                     // Fallback to reload
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 3000);
-                });
-        }
-        
-        function updateResultsPage(data) {
-            // Clear previous results if any dynamically added ones exist
-            const existingResults = document.getElementById('resultsSection');
-            if (existingResults) {
-                existingResults.remove();
-            }
-
-            let resultsHTML = `
-                <div id="resultsSection"> <hr>
-                    <h5 class="mt-4">${data.message || (data.results.length > 0 ? '✅ Good Proxies (Fraud Score 0)' : 'ℹ️ No good proxies found with Fraud Score 0.')}</h5>
-            `;
-            
-            if (data.results && data.results.length > 0) {
-                resultsHTML += `<ul class="list-group mt-2">`;
-                data.results.forEach((item, index) => {
-                    resultsHTML += `
-                        <li class="list-group-item d-flex justify-content-between align-items-center">
-                            <span class="proxy-masked" id="dynamic-proxy-${index}" data-full-proxy="${item.proxy}">
-                                ${item.proxy.split(':')[0]}:${item.proxy.split(':')[1]}:********
-                            </span>
-                    `;
-                    
-                    if (item.used) {
-                        resultsHTML += `<span class="used-badge">USED</span>`;
-                    } else {
-                        resultsHTML += `
-                            <button class="btn btn-sm btn-outline-secondary copy-btn" 
-                                    onclick="copyToClipboard('dynamic-proxy-${index}', this); trackUsedProxy('${item.proxy}')">
-                                Copy
-                            </button>
-                        `;
-                    }
-                    resultsHTML += `</li>`;
-                });
-                resultsHTML += `</ul>`;
-            } else if (!data.message) { // if no results and no specific message from server
-                 resultsHTML += `<p class="mt-2 text-muted">No proxies met the criteria or an issue occurred.</p>`;
-            }
-
-            resultsHTML += `
-                    <p class="mt-3 text-muted text-end">You will be redirected to the homepage in 5 minutes...</p>
-                </div>
-            `;
-            
-            // Insert results into the page
-            const accordion = document.getElementById('proxyAccordion');
-            accordion.insertAdjacentHTML('afterend', resultsHTML);
-            
-            // Hide queue status and form
-            document.getElementById('queueStatus').style.display = 'none';
-            const formCollapse = new bootstrap.Collapse(document.getElementById('proxyForm'), { toggle: false });
-            formCollapse.hide();
-            document.querySelector('#formHeading button').classList.add('collapsed');
-            document.querySelector('#formHeading button').setAttribute('aria-expanded', 'false');
-
-
-            // Re-enable submit button for future use (though page redirects)
-            const submitBtn = document.getElementById('submitBtn');
-            if (submitBtn) {
-                submitBtn.disabled = false;
-                submitBtn.classList.remove('disabled');
-            }
-            const submitSpinner = document.getElementById('submitSpinner');
-            if (submitSpinner) {
-                submitSpinner.classList.add('d-none');
-            }
-
-            // Set redirect timer
-            setTimeout(() => {
-                window.location.href = "/";
-            }, 300000); // 5 minutes
-        }
 
         function copyToClipboard(elementId, clickedButton) {
             const element = document.getElementById(elementId);
             const fullProxy = element.getAttribute('data-full-proxy');
             
-            // Immediately disable clicked button
             clickedButton.disabled = true;
             clickedButton.classList.add('disabled');
 
@@ -488,39 +297,26 @@
                     copiedMsg.className = "text-success ms-2 small";
                     copiedMsg.innerText = "✔ Copied!";
                     copiedMsg.style.fontWeight = "bold";
-                    // Insert after the proxy span, not the whole parent
-                    element.insertAdjacentElement('afterend', copiedMsg); 
-                    // Remove the copy button to prevent multiple "Copied!" messages
-                    clickedButton.style.display = 'none'; 
+                    element.parentElement.appendChild(copiedMsg);
                 }
-            }).catch(err => {
-                console.error('Failed to copy: ', err);
-                 // Re-enable button if copy failed
-                clickedButton.disabled = false;
-                clickedButton.classList.remove('disabled');
             });
 
-            // Disable all other *active* copy buttons (those not already used or marked USED)
-            const allButtons = document.querySelectorAll('.copy-btn:not(.disabled)');
+            const allButtons = document.querySelectorAll('.copy-btn');
             allButtons.forEach(button => {
-                if (button !== clickedButton) { // Ensure not to re-disable the one just clicked if it failed
+                if (button !== clickedButton) {
                     button.disabled = true;
                     button.classList.add('disabled');
                 }
             });
 
-            // Re-enable all active buttons after 60 seconds
             setTimeout(() => {
-                const activeButtons = document.querySelectorAll('.list-group-item:not(:has(.used-badge)) .copy-btn');
-                activeButtons.forEach(button => {
+                allButtons.forEach(button => {
                     button.disabled = false;
                     button.classList.remove('disabled');
-                    // Remove "Copied!" message if it exists near this button
-                    const parentLi = button.closest('li');
-                    const copiedSpan = parentLi.querySelector('.text-success.small');
-                    if(copiedSpan) copiedSpan.remove();
-                    button.style.display = ''; // Make button visible again
                 });
+                // Remove "Copied!" messages
+                 const copiedMessages = document.querySelectorAll('.text-success.ms-2.small');
+                 copiedMessages.forEach(msg => msg.remove());
             }, 60000);
         }
 
@@ -536,6 +332,12 @@
                 body: JSON.stringify({proxy: proxy})
             }).catch(error => console.error('Error tracking used proxy:', error));
         }
+
+        {% if results %}
+        setTimeout(function() {
+            window.location.href = "/";
+        }, 300000); // 5 minutes
+        {% endif %}
     </script>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
