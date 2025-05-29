@@ -9,13 +9,27 @@ import matplotlib.pyplot as plt
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
+import uuid
+from collections import deque
+from threading import Thread, Lock
+import queue
 
 app = Flask(__name__)
 
+# Configuration
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 PROXY_LOG_FILE = "proxy_log.txt"
 MAX_WORKERS = 50
 REQUEST_TIMEOUT = 4
+MAX_PROXIES_PER_CHECK = 50
+MAX_QUEUE_SIZE = 5  # Max tasks in queue
+
+# Task queue system
+task_queue = deque()
+task_queue_lock = Lock()
+task_status = {}  # task_id: status ('queued', 'processing', 'completed')
+current_task = None
+task_results = {}
 
 # Google Sheets config
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -99,6 +113,57 @@ def single_check_proxy(proxy_line):
         return {"proxy": proxy_line, "ip": ip}
     return None
 
+def process_proxies(proxies, task_id):
+    results = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(single_check_proxy, proxy) for proxy in proxies]
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                used = is_ip_used(result["ip"])
+                results.append({
+                    "proxy": result["proxy"],
+                    "used": used
+                })
+
+    # Store results
+    with task_queue_lock:
+        task_results[task_id] = results
+        task_status[task_id] = 'completed'
+
+    # Clean up old tasks
+    for tid in list(task_status.keys()):
+        if task_status[tid] == 'completed' and (time.time() - float(tid.split('_')[0]) > 3600:  # 1 hour
+            del task_status[tid]
+            if tid in task_results:
+                del task_results[tid]
+
+def task_worker():
+    global current_task
+    while True:
+        with task_queue_lock:
+            if task_queue and current_task is None:
+                task_id, proxies = task_queue.popleft()
+                current_task = task_id
+                task_status[task_id] = 'processing'
+            else:
+                current_task = None
+                
+        if current_task:
+            try:
+                process_proxies(proxies, current_task)
+            except Exception as e:
+                print(f"Task processing error: {e}")
+            finally:
+                with task_queue_lock:
+                    current_task = None
+                    
+        time.sleep(1)
+
+# Start worker thread
+worker_thread = Thread(target=task_worker, daemon=True)
+worker_thread.start()
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     results = []
@@ -117,35 +182,85 @@ def index():
             message = "Checking pasted proxies..."
 
         proxies = list(set(p.strip() for p in proxies if p.strip()))
+        
+        # Validate proxy count
+        if len(proxies) > MAX_PROXIES_PER_CHECK:
+            message = f"⚠️ Maximum {MAX_PROXIES_PER_CHECK} proxies allowed per check."
+            return render_template("index.html", message=message, results=None)
+        
+        # Check queue status
+        with task_queue_lock:
+            queue_size = len(task_queue)
+            if queue_size >= MAX_QUEUE_SIZE:
+                message = "⚠️ Queue is full. Please try again later."
+                return render_template("index.html", message=message, results=None)
+            
+            # Create task
+            task_id = f"{time.time()}_{uuid.uuid4().hex}"
+            task_queue.append((task_id, proxies))
+            task_status[task_id] = 'queued'
+            position = queue_size + 1  # +1 because we just added this task
+            
+            # Set task_id as cookie so client can track it
+            response = render_template("index.html", message=message, results=None)
+            response.set_cookie('task_id', task_id)
+            return response
 
-        if proxies:
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [executor.submit(single_check_proxy, proxy) for proxy in proxies]
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result:
-                        used = is_ip_used(result["ip"])
-                        results.append({
-                            "proxy": result["proxy"],
-                            "used": used
-                        })
+    # Check if we have completed task results
+    task_id = request.cookies.get('task_id')
+    if task_id and task_id in task_status and task_status[task_id] == 'completed':
+        results = task_results.get(task_id, [])
+        if results:
+            with open(GOOD_PROXIES_FILE, "w") as out:
+                for item in results:
+                    if not item["used"]:
+                        out.write(item["proxy"] + "\n")
 
-            if results:
-                with open(GOOD_PROXIES_FILE, "w") as out:
-                    for item in results:
-                        if not item["used"]:
-                            out.write(item["proxy"] + "\n")
+            with open(PROXY_LOG_FILE, "a") as log:
+                log.write(f"{datetime.date.today()},{len([r for r in results if not r['used']])} proxies\n")
 
-                with open(PROXY_LOG_FILE, "a") as log:
-                    log.write(f"{datetime.date.today()},{len([r for r in results if not r['used']])} proxies\n")
-
-                message = f"✅ {len([r for r in results if not r['used']])} good proxies found ({len([r for r in results if r['used']])} used)."
-            else:
-                message = "⚠️ No good proxies found."
+            message = f"✅ {len([r for r in results if not r['used']])} good proxies found ({len([r for r in results if r['used']])} used)."
         else:
-            message = "⚠️ No proxies provided."
+            message = "⚠️ No good proxies found."
+            
+        # Clear task cookie
+        response = render_template("index.html", results=results, message=message)
+        response.set_cookie('task_id', '', expires=0)
+        return response
 
     return render_template("index.html", results=results, message=message)
+
+@app.route("/queue-status")
+def queue_status():
+    task_id = request.args.get('task_id')
+    if not task_id:
+        return jsonify({'error': 'Missing task_id'}), 400
+        
+    with task_queue_lock:
+        status = task_status.get(task_id, 'not_found')
+        
+        if status == 'processing':
+            return jsonify({
+                'status': 'processing',
+                'queue_size': len(task_queue) + 1  # +1 for current task
+            })
+        elif status == 'queued':
+            # Find position in queue
+            position = 0
+            for i, (tid, _) in enumerate(task_queue):
+                if tid == task_id:
+                    position = i + 1
+                    break
+                    
+            return jsonify({
+                'status': 'queued',
+                'position': position,
+                'queue_size': len(task_queue) + 1  # +1 for current task
+            })
+        elif status == 'completed':
+            return jsonify({'status': 'completed'})
+        else:
+            return jsonify({'status': 'not_found'}), 404
 
 @app.route("/track-used", methods=["POST"])
 def track_used():
