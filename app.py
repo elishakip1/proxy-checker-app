@@ -16,7 +16,7 @@ GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 PROXY_LOG_FILE = "proxy_log.txt"
 MAX_WORKERS = 50
 REQUEST_TIMEOUT = 4
-PROXY_CHECK_HARD_LIMIT = 50 # New hard limit constant
+PROXY_CHECK_HARD_LIMIT = 50
 
 # Google Sheets config
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -31,8 +31,7 @@ def get_gsheet_client():
 
 def get_sheet():
     client = get_gsheet_client()
-    # Replace "UsedIPs" with your actual Google Sheet name if different
-    return client.open("UsedIPs").sheet1 
+    return client.open("UsedIPs").sheet1
 
 def append_used_ip(ip, proxy):
     sheet = get_sheet()
@@ -41,18 +40,17 @@ def append_used_ip(ip, proxy):
 def is_ip_used(ip):
     try:
         sheet = get_sheet()
-        ips = sheet.col_values(1) # Assuming IP is in the first column
+        ips = sheet.col_values(1)
         return ip in ips
-    except Exception as e:
-        print(f"Error checking if IP is used: {e}")
+    except:
         return False
 
 def remove_ip(ip):
     sheet = get_sheet()
     records = sheet.get_all_records()
     for i, row in enumerate(records):
-        if row.get("IP") == ip: # Assuming the column header is "IP"
-            sheet.delete_rows(i + 2) # +2 because sheet rows are 1-indexed and header row
+        if row.get("IP") == ip:
+            sheet.delete_rows(i + 2)
             break
 
 def list_used_ips():
@@ -67,13 +65,11 @@ def list_good_proxies():
 
 def get_ip_from_proxy(proxy):
     try:
-        # Assuming proxy format: host:port:user:pass
         host, port, user, pw = proxy.strip().split(":")
         proxies = {
             "http": f"http://{user}:{pw}@{host}:{port}",
             "https": f"http://{user}:{pw}@{host}:{port}",
         }
-        # Use a well-known IP echo service
         ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT).text
         return ip
     except Exception as e:
@@ -112,36 +108,23 @@ def index():
     if request.method == "POST":
         proxies = []
         all_lines = []
+        truncation_warning = ""
 
         if 'proxyfile' in request.files and request.files['proxyfile'].filename:
             file = request.files['proxyfile']
             all_lines = file.read().decode("utf-8").strip().splitlines()
-            
-            # Apply the hard limit here
-            proxies = all_lines[:PROXY_CHECK_HARD_LIMIT] 
-            
             if len(all_lines) > PROXY_CHECK_HARD_LIMIT:
-                message = f"Warning: Only the first {PROXY_CHECK_HARD_LIMIT} proxies from the uploaded file will be checked."
-            elif all_lines:
-                message = "Checking uploaded proxy file..."
-            else:
-                message = "No proxies found in the uploaded file."
-
+                truncation_warning = f" Only the first {PROXY_CHECK_HARD_LIMIT} proxies were processed."
+                all_lines = all_lines[:PROXY_CHECK_HARD_LIMIT]
+            proxies = all_lines
         elif 'proxytext' in request.form:
             proxytext = request.form.get("proxytext", "")
             all_lines = proxytext.strip().splitlines()
-            
-            # Apply the hard limit here
-            proxies = all_lines[:PROXY_CHECK_HARD_LIMIT]
-            
             if len(all_lines) > PROXY_CHECK_HARD_LIMIT:
-                message = f"Warning: Only the first {PROXY_CHECK_HARD_LIMIT} proxies from your input will be checked."
-            elif all_lines:
-                message = "Checking pasted proxies..."
-            else:
-                message = "No proxies pasted."
-        
-        # Ensure unique proxies and remove empty lines
+                truncation_warning = f" Only the first {PROXY_CHECK_HARD_LIMIT} proxies were processed."
+                all_lines = all_lines[:PROXY_CHECK_HARD_LIMIT]
+            proxies = all_lines
+
         proxies = list(set(p.strip() for p in proxies if p.strip()))
 
         if proxies:
@@ -157,27 +140,19 @@ def index():
                         })
 
             if results:
-                # Filter for good, unused proxies to save to file
-                good_unused_proxies = [item["proxy"] for item in results if not item["used"]]
-                if good_unused_proxies:
-                    with open(GOOD_PROXIES_FILE, "w") as out:
-                        for proxy_item in good_unused_proxies:
-                            out.write(proxy_item + "\n")
-                else:
-                    # If no good unused proxies, clear the file or ensure it's empty
-                    open(GOOD_PROXIES_FILE, "w").close()
+                with open(GOOD_PROXIES_FILE, "w") as out:
+                    for item in results:
+                        if not item["used"]:
+                            out.write(item["proxy"] + "\n")
 
-                # Log all good proxies found (used or not)
                 with open(PROXY_LOG_FILE, "a") as log:
-                    log.write(f"{datetime.date.today()},{len([r for r in results if not r['used']])} good unused proxies found\n")
+                    log.write(f"{datetime.date.today()},{len([r for r in results if not r['used']])} proxies\n")
 
-                if not message.startswith("Warning"): # Don't overwrite existing warnings
-                    message = f"✅ {len([r for r in results if not r['used']])} good proxies found ({len([r for r in results if r['used']])} used)."
+                message = f"✅ {len([r for r in results if not r['used']])} good proxies found ({len([r for r in results if r['used']])} used).{truncation_warning}"
             else:
-                if not message.startswith("Warning"):
-                    message = "⚠️ No good proxies found."
-        elif not message: # If no proxies after processing and no warning was set
-            message = "⚠️ No valid proxies provided or processed."
+                message = f"⚠️ No good proxies found.{truncation_warning}"
+        else:
+            message = "⚠️ No proxies provided or input exceeded the limit and was trimmed to zero."
 
     return render_template("index.html", results=results, message=message)
 
@@ -185,10 +160,9 @@ def index():
 def track_used():
     data = request.get_json()
     if data and "proxy" in data:
-        proxy_to_track = data["proxy"]
-        ip = get_ip_from_proxy(proxy_to_track)
+        ip = get_ip_from_proxy(data["proxy"])
         if ip:
-            append_used_ip(ip, proxy_to_track)
+            append_used_ip(ip, data["proxy"])
         return jsonify({"status": "success"})
     return jsonify({"status": "error"}), 400
 
@@ -209,20 +183,16 @@ def admin():
                 line = line.strip()
                 if line:
                     logs.append(line)
-                    try:
-                        date_str, count_info = line.split(",", 1) # Split only on the first comma
-                        count = int(count_info.split()[0]) # Get the number before "proxies" or "good unused proxies"
-                        daily_data[date_str] = daily_data.get(date_str, 0) + count
-                    except ValueError:
-                        # Handle malformed log lines if any
-                        print(f"Skipping malformed log line: {line}")
+                    date_str, count_str = line.split(",")
+                    count = int(count_str.split()[0])
+                    daily_data[date_str] = daily_data.get(date_str, 0) + count
 
     stats["total_checks"] = len(logs)
-    stats["total_good"] = sum(int(line.split(",")[1].split()[0]) for line in logs if line.strip())
+    stats["total_good"] = sum(int(line.split(",")[1].split()[0]) for line in logs)
 
     if daily_data:
-        dates = sorted(daily_data.keys()) # Ensure dates are in order for plotting
-        counts = [daily_data[d] for d in dates]
+        dates = list(daily_data.keys())
+        counts = list(daily_data.values())
         plt.figure(figsize=(10, 4))
         plt.plot(dates, counts, marker="o", color="green")
         plt.title("Good Proxies per Day")
