@@ -1,4 +1,3 @@
-app.py code 
 from flask import Flask, request, render_template, send_from_directory, jsonify, redirect, url_for
 import os
 import time
