@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, send_from_directory, jsonify, redirect, url_for, make_response
+from flask import Flask, request, render_template, send_from_directory, jsonify, redirect, url_for
 import os
 import time
 import requests
@@ -13,6 +13,7 @@ import uuid
 from collections import deque
 from threading import Thread, Lock
 import logging
+import traceback
 
 app = Flask(__name__)
 
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 PROXY_LOG_FILE = "proxy_log.txt"
 MAX_WORKERS = 50
-REQUEST_TIMEOUT = 4
+REQUEST_TIMEOUT = 10  # Increased timeout
 MAX_PROXIES_PER_CHECK = 50
 MAX_QUEUE_SIZE = 5  # Max tasks in queue
 
@@ -32,7 +33,6 @@ MAX_QUEUE_SIZE = 5  # Max tasks in queue
 task_queue = deque()
 task_queue_lock = Lock()
 task_status = {}  # task_id: status ('queued', 'processing', 'completed')
-current_task = None
 task_results = {}
 
 # Google Sheets config
@@ -51,38 +51,58 @@ def get_sheet():
     return client.open("UsedIPs").sheet1
 
 def append_used_ip(ip, proxy):
-    sheet = get_sheet()
-    sheet.append_row([ip, proxy, str(datetime.datetime.utcnow())])
+    try:
+        sheet = get_sheet()
+        sheet.append_row([ip, proxy, str(datetime.datetime.utcnow())])
+    except Exception as e:
+        logger.error(f"Error appending used IP: {str(e)}")
 
 def is_ip_used(ip):
     try:
         sheet = get_sheet()
         ips = sheet.col_values(1)
         return ip in ips
-    except:
+    except Exception as e:
+        logger.error(f"Error checking if IP is used: {str(e)}")
         return False
 
 def remove_ip(ip):
-    sheet = get_sheet()
-    records = sheet.get_all_records()
-    for i, row in enumerate(records):
-        if row.get("IP") == ip:
-            sheet.delete_rows(i + 2)
-            break
+    try:
+        sheet = get_sheet()
+        records = sheet.get_all_records()
+        for i, row in enumerate(records):
+            if row.get("IP") == ip:
+                sheet.delete_rows(i + 2)
+                break
+    except Exception as e:
+        logger.error(f"Error removing IP: {str(e)}")
 
 def list_used_ips():
-    sheet = get_sheet()
-    return sheet.get_all_records()
+    try:
+        sheet = get_sheet()
+        return sheet.get_all_records()
+    except Exception as e:
+        logger.error(f"Error listing used IPs: {str(e)}")
+        return []
 
 def list_good_proxies():
     if not os.path.exists(GOOD_PROXIES_FILE):
         return []
-    with open(GOOD_PROXIES_FILE, "r") as f:
-        return [line.strip() for line in f if line.strip()]
+    try:
+        with open(GOOD_PROXIES_FILE, "r") as f:
+            return [line.strip() for line in f if line.strip()]
+    except Exception as e:
+        logger.error(f"Error listing good proxies: {str(e)}")
+        return []
 
 def get_ip_from_proxy(proxy):
     try:
-        host, port, user, pw = proxy.strip().split(":")
+        parts = proxy.strip().split(":")
+        if len(parts) < 4:
+            logger.error(f"Invalid proxy format: {proxy}")
+            return None
+            
+        host, port, user, pw = parts[:4]
         proxies = {
             "http": f"http://{user}:{pw}@{host}:{port}",
             "https": f"http://{user}:{pw}@{host}:{port}",
@@ -91,11 +111,14 @@ def get_ip_from_proxy(proxy):
         response.raise_for_status()
         return response.text
     except Exception as e:
-        logger.error(f"❌ Failed to get IP from proxy {proxy}: {e}")
+        logger.error(f"Failed to get IP from proxy {proxy}: {str(e)}")
         return None
 
 def get_fraud_score(ip):
     try:
+        if not ip:
+            return None
+            
         url = f"https://scamalytics.com/ip/{ip}"
         response = requests.get(url, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
@@ -105,17 +128,20 @@ def get_fraud_score(ip):
                 score_text = score_div.text.strip().split(":")[1].strip()
                 return int(score_text)
     except Exception as e:
-        logger.error(f"⚠️ Error checking Scamalytics for {ip}: {e}")
+        logger.error(f"Error checking Scamalytics for {ip}: {str(e)}")
     return None
 
 def single_check_proxy(proxy_line):
-    ip = get_ip_from_proxy(proxy_line)
-    if not ip:
-        return None
+    try:
+        ip = get_ip_from_proxy(proxy_line)
+        if not ip:
+            return None
 
-    score = get_fraud_score(ip)
-    if score == 0:
-        return {"proxy": proxy_line, "ip": ip}
+        score = get_fraud_score(ip)
+        if score == 0:
+            return {"proxy": proxy_line, "ip": ip}
+    except Exception as e:
+        logger.error(f"Error checking proxy {proxy_line}: {str(e)}")
     return None
 
 def process_proxies(proxies, task_id):
@@ -125,15 +151,18 @@ def process_proxies(proxies, task_id):
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = [executor.submit(single_check_proxy, proxy) for proxy in proxies]
             for future in as_completed(futures):
-                result = future.result()
-                if result:
-                    used = is_ip_used(result["ip"])
-                    results.append({
-                        "proxy": result["proxy"],
-                        "used": used
-                    })
+                try:
+                    result = future.result()
+                    if result:
+                        used = is_ip_used(result["ip"])
+                        results.append({
+                            "proxy": result["proxy"],
+                            "used": used
+                        })
+                except Exception as e:
+                    logger.error(f"Error processing proxy: {str(e)}")
     except Exception as e:
-        logger.error(f"Error processing proxies: {e}")
+        logger.error(f"Error processing proxies: {str(e)}")
     
     logger.info(f"Completed processing for task {task_id}. Found {len(results)} good proxies")
     
@@ -142,39 +171,28 @@ def process_proxies(proxies, task_id):
         task_results[task_id] = results
         task_status[task_id] = 'completed'
 
-    # Clean up old tasks
-    current_time = time.time()
-    for tid in list(task_status.keys()):
-        # Check if task is completed and older than 1 hour
-        if task_status[tid] == 'completed' and (current_time - float(tid.split('_')[0])) > 3600:
-            del task_status[tid]
-            if tid in task_results:
-                del task_results[tid]
-
 def task_worker():
-    global current_task
     logger.info("Task worker thread started")
     while True:
-        with task_queue_lock:
-            if task_queue and current_task is None:
-                task_id, proxies = task_queue.popleft()
-                current_task = task_id
-                task_status[task_id] = 'processing'
-                logger.info(f"Starting task {task_id}")
-            else:
-                current_task = None
-                
-        if current_task:
-            try:
-                process_proxies(proxies, current_task)
-            except Exception as e:
-                logger.error(f"Task processing error: {e}")
-                with task_queue_lock:
-                    task_status[current_task] = 'completed'
-                    task_results[current_task] = []
-            finally:
-                with task_queue_lock:
-                    current_task = None
+        try:
+            with task_queue_lock:
+                if task_queue:
+                    task_id, proxies = task_queue.popleft()
+                    task_status[task_id] = 'processing'
+                else:
+                    task_id = None
+                    
+            if task_id:
+                try:
+                    process_proxies(proxies, task_id)
+                except Exception as e:
+                    logger.error(f"Task processing error: {str(e)}")
+                    with task_queue_lock:
+                        task_status[task_id] = 'completed'
+                        task_results[task_id] = []
+        except Exception as e:
+            logger.error(f"Worker thread error: {str(e)}")
+            
         time.sleep(1)
 
 # Start worker thread
@@ -186,7 +204,7 @@ logger.info("Worker thread started successfully")
 def index():
     results = []
     message = ""
-    task_id = None  # Initialize task_id variable
+    task_id = None
 
     if request.method == "POST":
         proxies = []
@@ -194,12 +212,15 @@ def index():
         if 'proxyfile' in request.files and request.files['proxyfile'].filename:
             file = request.files['proxyfile']
             try:
-                proxies = file.read().decode("utf-8").strip().splitlines()
+                content = file.read()
+                if isinstance(content, bytes):
+                    content = content.decode("utf-8", errors="replace")
+                proxies = content.strip().splitlines()
                 message = "Checking uploaded proxy file..."
                 logger.info(f"Received file with {len(proxies)} proxies")
             except Exception as e:
                 message = f"⚠️ Error reading file: {str(e)}"
-                logger.error(f"File read error: {e}")
+                logger.error(f"File read error: {str(e)}")
         elif 'proxytext' in request.form:
             proxytext = request.form.get("proxytext", "")
             proxies = proxytext.strip().splitlines()
@@ -211,14 +232,14 @@ def index():
         # Validate proxy count
         if len(proxies) > MAX_PROXIES_PER_CHECK:
             message = f"⚠️ Maximum {MAX_PROXIES_PER_CHECK} proxies allowed per check."
-            return render_template("index.html", message=message, results=None, task_id=None)
+            return render_template("index.html", message=message, results=None)
         
         # Check queue status
         with task_queue_lock:
             queue_size = len(task_queue)
             if queue_size >= MAX_QUEUE_SIZE:
                 message = "⚠️ Queue is full. Please try again later."
-                return render_template("index.html", message=message, results=None, task_id=None)
+                return render_template("index.html", message=message, results=None)
             
             # Create task
             task_id = f"{time.time()}_{uuid.uuid4().hex}"
@@ -228,32 +249,8 @@ def index():
             
             logger.info(f"Created task {task_id} with {len(proxies)} proxies. Queue position: {position}")
             
-            # Create a response object to set cookie
-            response = make_response(render_template("index.html", message=message, results=None, task_id=task_id))
-            response.set_cookie('task_id', task_id)
-            return response
-
-    # Check if we have completed task results from cookie
-    cookie_task_id = request.cookies.get('task_id')
-    if cookie_task_id and cookie_task_id in task_status and task_status[cookie_task_id] == 'completed':
-        results = task_results.get(cookie_task_id, [])
-        if results:
-            with open(GOOD_PROXIES_FILE, "w") as out:
-                for item in results:
-                    if not item["used"]:
-                        out.write(item["proxy"] + "\n")
-
-            with open(PROXY_LOG_FILE, "a") as log:
-                log.write(f"{datetime.date.today()},{len([r for r in results if not r['used']])} proxies\n")
-
-            message = f"✅ {len([r for r in results if not r['used']])} good proxies found ({len([r for r in results if r['used']])} used)."
-        else:
-            message = "⚠️ No good proxies found."
-            
-        # Clear task cookie using a response object
-        response = make_response(render_template("index.html", results=results, message=message, task_id=None))
-        response.set_cookie('task_id', '', expires=0)
-        return response
+            # Return the task ID in a hidden field
+            return render_template("index.html", message=message, results=None, task_id=task_id)
 
     return render_template("index.html", results=results, message=message, task_id=None)
 
@@ -290,6 +287,36 @@ def queue_status():
         else:
             return jsonify({'status': 'not_found'}), 404
 
+@app.route("/get-results")
+def get_results():
+    task_id = request.args.get('task_id')
+    if not task_id:
+        return jsonify({'error': 'Missing task_id'}), 400
+        
+    with task_queue_lock:
+        if task_id in task_results:
+            results = task_results[task_id]
+            
+            # Save results to file
+            if results:
+                try:
+                    with open(GOOD_PROXIES_FILE, "w") as out:
+                        for item in results:
+                            if not item["used"]:
+                                out.write(item["proxy"] + "\n")
+
+                    with open(PROXY_LOG_FILE, "a") as log:
+                        log.write(f"{datetime.date.today()},{len([r for r in results if not r['used']])} proxies\n")
+                except Exception as e:
+                    logger.error(f"Error saving results: {str(e)}")
+            
+            return jsonify({
+                'results': results,
+                'message': f"✅ {len([r for r in results if not r['used']])} good proxies found ({len([r for r in results if r['used']])} used)."
+            })
+    
+    return jsonify({'error': 'Results not found'}), 404
+
 @app.route("/track-used", methods=["POST"])
 def track_used():
     data = request.get_json()
@@ -317,12 +344,15 @@ def admin():
                 line = line.strip()
                 if line:
                     logs.append(line)
-                    date_str, count_str = line.split(",")
-                    count = int(count_str.split()[0])
-                    daily_data[date_str] = daily_data.get(date_str, 0) + count
+                    try:
+                        date_str, count_str = line.split(",")
+                        count = int(count_str.split()[0])
+                        daily_data[date_str] = daily_data.get(date_str, 0) + count
+                    except Exception as e:
+                        logger.error(f"Error parsing log line: {line} - {str(e)}")
 
     stats["total_checks"] = len(logs)
-    stats["total_good"] = sum(int(line.split(",")[1].split()[0]) for line in logs)
+    stats["total_good"] = sum([int(line.split(",")[1].split()[0]) for line in logs if line])
 
     if daily_data:
         dates = list(daily_data.keys())
