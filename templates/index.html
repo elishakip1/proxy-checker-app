@@ -38,6 +38,24 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
+        /* Queue status styles */
+        .queue-status {
+            background-color: #e9ecef;
+            border-radius: 5px;
+            padding: 10px 15px;
+            margin-bottom: 15px;
+            display: none;
+        }
+        .queue-badge {
+            font-size: 0.9rem;
+            padding: 5px 10px;
+        }
+        .spinner-border {
+            width: 1.2rem;
+            height: 1.2rem;
+            margin-right: 8px;
+            vertical-align: text-top;
+        }
     </style>
 </head>
 <body>
@@ -51,6 +69,16 @@
         <div class="alert alert-info">{{ message }}</div>
         {% endif %}
 
+        <div class="queue-status" id="queueStatus">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="spinner-border spinner-border-sm"></span>
+                    <span id="queueMessage">Processing your request...</span>
+                </div>
+                <span class="badge bg-primary queue-badge" id="queuePosition">Position: 1/1</span>
+            </div>
+        </div>
+
         <div class="accordion" id="proxyAccordion">
             <div class="accordion-item">
                 <h2 class="accordion-header" id="formHeading">
@@ -60,16 +88,24 @@
                 </h2>
                 <div id="proxyForm" class="accordion-collapse collapse {% if not results %}show{% endif %}" aria-labelledby="formHeading" data-bs-parent="#proxyAccordion">
                     <div class="accordion-body">
-                        <form method="POST" enctype="multipart/form-data">
+                        <form method="POST" enctype="multipart/form-data" id="proxyFormElement">
                             <div class="mb-3">
                                 <label for="proxyfile" class="form-label">Upload Proxy File</label>
-                                <input type="file" class="form-control" name="proxyfile">
+                                <input type="file" class="form-control" name="proxyfile" id="proxyfile">
+                                <div class="form-text text-danger" id="fileError"></div>
                             </div>
                             <div class="mb-3">
                                 <label for="proxytext" class="form-label">Or Paste Proxies</label>
-                                <textarea name="proxytext" class="form-control textarea-box" placeholder="Paste proxies here (one per line)..."></textarea>
+                                <textarea name="proxytext" class="form-control textarea-box" 
+                                          id="proxytext" 
+                                          placeholder="Paste proxies here (one per line)..."
+                                          oninput="validateProxyCount()"></textarea>
+                                <div class="form-text text-danger" id="proxyError">Maximum 50 proxies allowed</div>
                             </div>
-                            <button type="submit" class="btn btn-primary w-100">Check Proxies</button>
+                            <button type="submit" class="btn btn-primary w-100" id="submitBtn">
+                                <span class="spinner-border spinner-border-sm d-none" id="submitSpinner"></span>
+                                Check Proxies
+                            </button>
                         </form>
                     </div>
                 </div>
@@ -102,6 +138,130 @@
 
     <script>
         let trackedProxies = new Set();
+        let queuePosition = 0;
+        let queueSize = 1;
+        let queueCheckInterval;
+        let currentTaskId = null;
+
+        // Initialize form validation
+        document.addEventListener('DOMContentLoaded', function() {
+            validateProxyCount();
+            document.getElementById('proxyError').style.display = 'none';
+            document.getElementById('fileError').style.display = 'none';
+            
+            // Handle form submission
+            document.getElementById('proxyFormElement').addEventListener('submit', function(e) {
+                if (!validateProxyCount()) {
+                    e.preventDefault();
+                    return;
+                }
+                
+                // Show queue status
+                document.getElementById('queueStatus').style.display = 'block';
+                document.getElementById('submitBtn').disabled = true;
+                document.getElementById('submitBtn').classList.add('disabled');
+                document.getElementById('submitSpinner').classList.remove('d-none');
+                
+                // Generate unique task ID
+                currentTaskId = Date.now();
+                updateQueuePosition(1, 1);
+                
+                // Start polling for queue updates
+                startQueuePolling();
+            });
+        });
+
+        function validateProxyCount() {
+            const textarea = document.getElementById('proxytext');
+            const fileInput = document.getElementById('proxyfile');
+            const proxyError = document.getElementById('proxyError');
+            const fileError = document.getElementById('fileError');
+            const submitBtn = document.getElementById('submitBtn');
+            
+            let valid = true;
+            
+            // Reset errors
+            proxyError.style.display = 'none';
+            fileError.style.display = 'none';
+            
+            // Check textarea
+            if (textarea.value) {
+                const lines = textarea.value.split('\n').filter(line => line.trim() !== '');
+                if (lines.length > 50) {
+                    proxyError.style.display = 'block';
+                    valid = false;
+                }
+            }
+            
+            // Check file
+            if (fileInput.files.length > 0) {
+                const file = fileInput.files[0];
+                const reader = new FileReader();
+                
+                reader.onload = function(e) {
+                    const content = e.target.result;
+                    const lines = content.split('\n').filter(line => line.trim() !== '');
+                    
+                    if (lines.length > 50) {
+                        fileError.textContent = 'File contains more than 50 proxies';
+                        fileError.style.display = 'block';
+                        submitBtn.disabled = true;
+                        submitBtn.classList.add('disabled');
+                    } else {
+                        fileError.style.display = 'none';
+                        if (valid) {
+                            submitBtn.disabled = false;
+                            submitBtn.classList.remove('disabled');
+                        }
+                    }
+                };
+                
+                reader.readAsText(file);
+                return false; // Wait for async file read
+            }
+            
+            submitBtn.disabled = !valid;
+            if (!valid) {
+                submitBtn.classList.add('disabled');
+            } else {
+                submitBtn.classList.remove('disabled');
+            }
+            
+            return valid;
+        }
+
+        function updateQueuePosition(position, size) {
+            queuePosition = position;
+            queueSize = size;
+            document.getElementById('queuePosition').textContent = `Position: ${position}/${size}`;
+            
+            if (position === 1) {
+                document.getElementById('queueMessage').textContent = 'Processing your request...';
+            } else {
+                document.getElementById('queueMessage').textContent = 'Waiting in queue...';
+            }
+        }
+
+        function startQueuePolling() {
+            clearInterval(queueCheckInterval);
+            queueCheckInterval = setInterval(function() {
+                fetch(`/queue-status?task_id=${currentTaskId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.status === 'processing') {
+                            updateQueuePosition(1, data.queue_size);
+                        } else if (data.status === 'queued') {
+                            updateQueuePosition(data.position, data.queue_size);
+                        } else if (data.status === 'completed') {
+                            clearInterval(queueCheckInterval);
+                            // Form will submit normally
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Queue polling error:', error);
+                    });
+            }, 3000);
+        }
 
         function copyToClipboard(elementId, clickedButton) {
             const element = document.getElementById(elementId);
