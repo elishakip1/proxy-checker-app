@@ -27,6 +27,7 @@
         .proxy-masked {
             font-family: monospace;
         }
+        /* Disabled styles */
         a.disabled {
             pointer-events: none;
             color: #6c757d !important;
@@ -37,25 +38,6 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
-        .status-message-area { /* For processing/queue messages */
-            background-color: #e9ecef;
-            border-radius: 5px;
-            padding: 10px 15px;
-            margin-bottom: 15px;
-            display: none; /* Hidden by default, shown by JS */
-        }
-        .spinner-border-sm { /* Ensure spinner is small enough */
-            width: 1rem;
-            height: 1rem;
-            margin-right: 8px;
-            vertical-align: text-bottom;
-        }
-        .form-text.text-danger {
-            font-size: 0.875em;
-        }
-        #submitProxyButton .spinner-border-sm { /* Spinner specifically within the button */
-             vertical-align: middle;
-        }
     </style>
 </head>
 <body>
@@ -65,44 +47,29 @@
             <a href="#" class="btn btn-outline-secondary btn-sm disabled">⚡Upgrade</a>
         </div>
 
-        {% if message and not results %}
-        <div class="alert alert-info" id="initialServerMessage">{{ message }}</div>
+        {% if message %}
+        <div class="alert alert-info">{{ message }}</div>
         {% endif %}
-
-        <div class="status-message-area" id="statusMessageArea">
-            <div class="d-flex align-items-center">
-                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                <span id="statusMessageText">Processing your request...</span>
-            </div>
-        </div>
 
         <div class="accordion" id="proxyAccordion">
             <div class="accordion-item">
                 <h2 class="accordion-header" id="formHeading">
-                    <button class="accordion-button {% if results or (message and not results) %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#proxyForm" 
-                            aria-expanded="{{ 'false' if (results or (message and not results)) else 'true' }}" aria-controls="proxyForm">
+                    <button class="accordion-button {% if results %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#proxyForm" aria-expanded="{{ 'false' if results else 'true' }}" aria-controls="proxyForm">
                         Paste or Upload Proxies
                     </button>
                 </h2>
-                <div id="proxyForm" class="accordion-collapse collapse {% if not results and not (message and not results) %}show{% endif %}" 
-                     aria-labelledby="formHeading" data-bs-parent="#proxyAccordion">
+                <div id="proxyForm" class="accordion-collapse collapse {% if not results %}show{% endif %}" aria-labelledby="formHeading" data-bs-parent="#proxyAccordion">
                     <div class="accordion-body">
-                        <form method="POST" enctype="multipart/form-data" id="mainProxyForm">
+                        <form method="POST" enctype="multipart/form-data">
                             <div class="mb-3">
-                                <label for="proxyfile" class="form-label">Upload Proxy File (.txt)</label>
-                                <input type="file" class="form-control" name="proxyfile" id="proxyfile" accept=".txt">
-                                <div class="form-text text-danger" id="fileError" style="display: none;"></div>
+                                <label for="proxyfile" class="form-label">Upload Proxy File</label>
+                                <input type="file" class="form-control" name="proxyfile" onchange="checkFileLines(this)">
                             </div>
                             <div class="mb-3">
-                                <label for="proxytext" class="form-label">Or Paste Proxies (max 50 lines)</label>
-                                <textarea name="proxytext" class="form-control textarea-box" id="proxytext" placeholder="Paste proxies here (one per line)..."></textarea>
-                                <div class="form-text text-danger" id="proxyTextError" style="display: none;">Maximum 50 proxies allowed.</div>
-                                <div class="form-text" id="lineCounter">Lines: 0/50</div>
+                                <label for="proxytext" class="form-label">Or Paste Proxies</label>
+                                <textarea name="proxytext" id="proxytext" class="form-control textarea-box" placeholder="Paste proxies here (one per line, max 50 lines)..." oninput="limitProxyLines(this)"></textarea>
                             </div>
-                            <button type="submit" class="btn btn-primary w-100" id="submitProxyButton">
-                                <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
-                                <span class="button-text">Check Proxies</span>
-                            </button>
+                            <button type="submit" id="submitBtn" class="btn btn-primary w-100">Check Proxies</button>
                         </form>
                     </div>
                 </div>
@@ -111,8 +78,6 @@
 
         {% if results %}
         <hr>
-        {% if message %} <div class="alert alert-success">{{ message }}</div>
-        {% endif %}
         <h5 class="mt-4">✅ Good Proxies (Fraud Score 0)</h5>
         <ul class="list-group mt-2">
             {% for item in results %}
@@ -132,179 +97,71 @@
             {% endfor %}
         </ul>
         <p class="mt-3 text-muted text-end">You will be redirected to the homepage in 5 minutes...</p>
-        {% elif message and not results %} <hr>
-             <div class="alert alert-warning">{{ message }}</div>
         {% endif %}
     </div>
 
     <script>
-        const MAX_PROXIES = 50;
         let trackedProxies = new Set();
+        const MAX_LINES = 50;
 
-        document.addEventListener('DOMContentLoaded', function() {
-            const proxyTextArea = document.getElementById('proxytext');
-            const lineCounter = document.getElementById('lineCounter');
-            const proxyTextError = document.getElementById('proxyTextError');
-            const proxyFileInput = document.getElementById('proxyfile');
-            const fileError = document.getElementById('fileError');
-            const submitButton = document.getElementById('submitProxyButton');
-            const submitButtonSpinner = submitButton.querySelector('.spinner-border-sm');
-            const submitButtonText = submitButton.querySelector('.button-text');
-            const mainProxyForm = document.getElementById('mainProxyForm');
-            const statusMessageArea = document.getElementById('statusMessageArea');
-            const statusMessageText = document.getElementById('statusMessageText');
-
-            // Initial UI setup based on whether results or messages are present from server
-            const hasResultsOrMessage = {{ results|length > 0 or (message and not results) | tojson }};
-            if (hasResultsOrMessage) {
-                 const formCollapse = new bootstrap.Collapse(document.getElementById('proxyForm'), { toggle: false });
-                 formCollapse.hide();
-                 const accordionButton = document.querySelector('#formHeading button');
-                 if (accordionButton) {
-                    accordionButton.classList.add('collapsed');
-                    accordionButton.setAttribute('aria-expanded', 'false');
-                 }
+        function limitProxyLines(textarea) {
+            const lines = textarea.value.split('\n');
+            if (lines.length > MAX_LINES) {
+                textarea.value = lines.slice(0, MAX_LINES).join('\n');
+                alert(`You can only enter a maximum of ${MAX_LINES} proxies at a time.`);
             }
+        }
 
-
-            function validateTextarea() {
-                const lines = proxyTextArea.value.split('\n').filter(line => line.trim() !== '');
-                const count = lines.length;
-                lineCounter.textContent = `Lines: ${count}/${MAX_PROXIES}`;
-                if (count > MAX_PROXIES) {
-                    proxyTextError.style.display = 'block';
-                    lineCounter.classList.add('text-danger');
-                    return false;
-                } else {
-                    proxyTextError.style.display = 'none';
-                    lineCounter.classList.remove('text-danger');
-                    return true;
-                }
-            }
-
-            async function validateFile() {
-                fileError.style.display = 'none';
-                if (proxyFileInput.files.length === 0) {
-                    return true; // No file, so valid in this context
-                }
-                const file = proxyFileInput.files[0];
-                if (!file || file.type !== "text/plain") {
-                    fileError.textContent = 'Invalid file type or no file selected. Please upload a .txt file.';
-                    fileError.style.display = 'block';
-                    return false;
-                }
-
-                try {
-                    const fileContent = await file.text();
-                    const lines = fileContent.split('\n').filter(line => line.trim() !== '');
-                    if (lines.length > MAX_PROXIES) {
-                        fileError.textContent = `File contains ${lines.length} proxies. Maximum ${MAX_PROXIES} allowed.`;
-                        fileError.style.display = 'block';
-                        return false;
+        function checkFileLines(input) {
+            const file = input.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const lines = e.target.result.split('\n');
+                    if (lines.length > MAX_LINES) {
+                        alert(`The uploaded file contains more than ${MAX_LINES} lines. Only the first ${MAX_LINES} lines will be processed.`);
+                        // Optionally disable submit button or trim the file content before submission
+                        // For now, we'll let the backend handle the trimming
                     }
-                } catch (e) {
-                    console.error("Error reading file:", e);
-                    fileError.textContent = 'Error reading file.';
-                    fileError.style.display = 'block';
-                    return false;
-                }
-                return true;
+                };
+                reader.readAsText(file);
             }
-
-            proxyTextArea.addEventListener('input', validateTextarea);
-            validateTextarea(); // Initial check
-
-            proxyFileInput.addEventListener('change', async function() {
-                await validateFile();
-            });
-
-            mainProxyForm.addEventListener('submit', async function(event) {
-                event.preventDefault(); // Prevent default submission, we'll handle it after validation
-
-                console.log("Submit button clicked. Performing validation...");
-
-                const isTextValid = validateTextarea();
-                const isFileValid = await validateFile(); // Await file validation
-
-                // Check if any proxies are provided at all
-                const textProxiesCount = proxyTextArea.value.split('\n').filter(line => line.trim() !== '').length;
-                const fileIsSelected = proxyFileInput.files.length > 0;
-
-                if (textProxiesCount === 0 && !fileIsSelected) {
-                     alert("Please paste proxies or upload a file.");
-                     return; // Stop if no input
-                }
-
-
-                if (!isTextValid || !isFileValid) {
-                    console.log("Client-side validation failed. Text Valid:", isTextValid, "File Valid:", isFileValid);
-                    return; // Stop submission
-                }
-                
-                console.log("Validation passed. Submitting form...");
-
-                // Show processing state
-                submitButton.disabled = true;
-                if (submitButtonSpinner) submitButtonSpinner.classList.remove('d-none');
-                if (submitButtonText) submitButtonText.textContent = 'Checking...';
-                
-                if (statusMessageArea) {
-                    statusMessageText.textContent = "Processing your proxies... please wait.";
-                    statusMessageArea.style.display = 'block';
-                }
-                const initialMsg = document.getElementById('initialServerMessage');
-                if(initialMsg) initialMsg.style.display = 'none'; // Hide initial Flask message
-
-                // Now, actually submit the form programmatically
-                mainProxyForm.submit(); 
-            });
-        });
-
+        }
 
         function copyToClipboard(elementId, clickedButton) {
             const element = document.getElementById(elementId);
-            if (!element) return;
             const fullProxy = element.getAttribute('data-full-proxy');
             
+            // Immediately disable clicked button
             clickedButton.disabled = true;
             clickedButton.classList.add('disabled');
-            const originalButtonText = clickedButton.innerHTML;
-            clickedButton.innerHTML = 'Copied!';
-
 
             navigator.clipboard.writeText(fullProxy).then(() => {
-                // Optional: Show a more persistent "Copied!" message if needed
-                // For now, button text change is the indicator
-            }).catch(err => {
-                console.error("Failed to copy:", err);
-                clickedButton.innerHTML = 'Copy Failed'; // Or revert to original
-            });
-
-            const allButtons = document.querySelectorAll('.copy-btn');
-            allButtons.forEach(button => {
-                if (button !== clickedButton && !button.disabled) { // Only disable other active buttons
-                    button.disabled = true;
-                    // button.classList.add('disabled'); // Already handled by disabling
+                if (!element.parentElement.querySelector('.text-success')) {
+                    const copiedMsg = document.createElement("span");
+                    copiedMsg.className = "text-success ms-2 small";
+                    copiedMsg.innerText = "✔ Copied!";
+                    copiedMsg.style.fontWeight = "bold";
+                    element.parentElement.appendChild(copiedMsg);
                 }
             });
 
+            // Disable all other buttons
+            const allButtons = document.querySelectorAll('.copy-btn');
+            allButtons.forEach(button => {
+                if (button !== clickedButton) {
+                    button.disabled = true;
+                    button.classList.add('disabled');
+                }
+            });
+
+            // Re-enable after 60 seconds
             setTimeout(() => {
-                // Re-enable all copy buttons that were part of the original set and not for "USED" items
-                document.querySelectorAll('.list-group-item:not(:has(.used-badge)) .copy-btn').forEach(button => {
+                allButtons.forEach(button => {
                     button.disabled = false;
                     button.classList.remove('disabled');
-                    if(button === clickedButton) button.innerHTML = originalButtonText; // Revert text only for the clicked one
-                    else { // For other buttons, ensure they are back to "Copy"
-                        const defaultCopyText = "Copy"; // Assuming "Copy" is the default text
-                        if(button.textContent !== defaultCopyText && !button.querySelector('.spinner-border-sm')) { // Basic check to avoid messing up
-                           // Find the text node if button contains more than just text
-                           let textNode = Array.from(button.childNodes).find(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim() !== "");
-                           if (textNode) textNode.nodeValue = defaultCopyText;
-                           else button.textContent = defaultCopyText; // Fallback
-                        }
-                    }
                 });
-            }, 5000); // Shorter timeout for copy buttons re-enable for better UX
+            }, 60000);
         }
 
         function trackUsedProxy(proxy) {
@@ -313,7 +170,9 @@
             
             fetch('/track-used', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body: JSON.stringify({proxy: proxy})
             }).catch(error => console.error('Error tracking used proxy:', error));
         }
@@ -321,7 +180,7 @@
         {% if results %}
         setTimeout(function() {
             window.location.href = "/";
-        }, 300000); // 5 minutes
+        }, 300000);
         {% endif %}
     </script>
 
