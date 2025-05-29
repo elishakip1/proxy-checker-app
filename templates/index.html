@@ -161,14 +161,12 @@
                 document.getElementById('submitBtn').disabled = true;
                 document.getElementById('submitBtn').classList.add('disabled');
                 document.getElementById('submitSpinner').classList.remove('d-none');
-                
-                // Generate unique task ID
-                currentTaskId = Date.now();
-                updateQueuePosition(1, 1);
-                
-                // Start polling for queue updates
-                startQueuePolling();
             });
+            
+            // Start polling if we have a task ID
+            if (currentTaskId) {
+                startQueuePolling();
+            }
         });
 
         function validateProxyCount() {
@@ -254,7 +252,8 @@
                             updateQueuePosition(data.position, data.queue_size);
                         } else if (data.status === 'completed') {
                             clearInterval(queueCheckInterval);
-                            // Form will submit normally
+                            // Refresh the page to show results
+                            window.location.reload();
                         }
                     })
                     .catch(error => {
@@ -316,6 +315,16 @@
         setTimeout(function() {
             window.location.href = "/";
         }, 300000);
+        {% endif %}
+
+        // If we have a task ID from the server, start polling immediately
+        {% if task_id %}
+            currentTaskId = "{{ task_id }}";
+            document.getElementById('queueStatus').style.display = 'block';
+            document.getElementById('submitBtn').disabled = true;
+            document.getElementById('submitBtn').classList.add('disabled');
+            document.getElementById('submitSpinner').classList.remove('d-none');
+            startQueuePolling();
         {% endif %}
     </script>
 
