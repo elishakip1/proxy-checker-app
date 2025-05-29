@@ -12,8 +12,13 @@ import json
 import uuid
 from collections import deque
 from threading import Thread, Lock
+import logging
 
 app = Flask(__name__)
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Configuration
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
@@ -82,10 +87,11 @@ def get_ip_from_proxy(proxy):
             "http": f"http://{user}:{pw}@{host}:{port}",
             "https": f"http://{user}:{pw}@{host}:{port}",
         }
-        ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT).text
-        return ip
+        response = requests.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        return response.text
     except Exception as e:
-        print(f"❌ Failed to get IP from proxy {proxy}: {e}")
+        logger.error(f"❌ Failed to get IP from proxy {proxy}: {e}")
         return None
 
 def get_fraud_score(ip):
@@ -99,7 +105,7 @@ def get_fraud_score(ip):
                 score_text = score_div.text.strip().split(":")[1].strip()
                 return int(score_text)
     except Exception as e:
-        print(f"⚠️ Error checking Scamalytics for {ip}: {e}")
+        logger.error(f"⚠️ Error checking Scamalytics for {ip}: {e}")
     return None
 
 def single_check_proxy(proxy_line):
@@ -113,18 +119,24 @@ def single_check_proxy(proxy_line):
     return None
 
 def process_proxies(proxies, task_id):
+    logger.info(f"Starting processing for task {task_id} with {len(proxies)} proxies")
     results = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [executor.submit(single_check_proxy, proxy) for proxy in proxies]
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                used = is_ip_used(result["ip"])
-                results.append({
-                    "proxy": result["proxy"],
-                    "used": used
-                })
-
+    try:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = [executor.submit(single_check_proxy, proxy) for proxy in proxies]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    used = is_ip_used(result["ip"])
+                    results.append({
+                        "proxy": result["proxy"],
+                        "used": used
+                    })
+    except Exception as e:
+        logger.error(f"Error processing proxies: {e}")
+    
+    logger.info(f"Completed processing for task {task_id}. Found {len(results)} good proxies")
+    
     # Store results
     with task_queue_lock:
         task_results[task_id] = results
@@ -141,12 +153,14 @@ def process_proxies(proxies, task_id):
 
 def task_worker():
     global current_task
+    logger.info("Task worker thread started")
     while True:
         with task_queue_lock:
             if task_queue and current_task is None:
                 task_id, proxies = task_queue.popleft()
                 current_task = task_id
                 task_status[task_id] = 'processing'
+                logger.info(f"Starting task {task_id}")
             else:
                 current_task = None
                 
@@ -154,19 +168,19 @@ def task_worker():
             try:
                 process_proxies(proxies, current_task)
             except Exception as e:
-                print(f"Task processing error: {e}")
+                logger.error(f"Task processing error: {e}")
                 with task_queue_lock:
                     task_status[current_task] = 'completed'
                     task_results[current_task] = []
             finally:
                 with task_queue_lock:
                     current_task = None
-                    
         time.sleep(1)
 
 # Start worker thread
 worker_thread = Thread(target=task_worker, daemon=True)
 worker_thread.start()
+logger.info("Worker thread started successfully")
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -179,12 +193,18 @@ def index():
 
         if 'proxyfile' in request.files and request.files['proxyfile'].filename:
             file = request.files['proxyfile']
-            proxies = file.read().decode("utf-8").strip().splitlines()
-            message = "Checking uploaded proxy file..."
+            try:
+                proxies = file.read().decode("utf-8").strip().splitlines()
+                message = "Checking uploaded proxy file..."
+                logger.info(f"Received file with {len(proxies)} proxies")
+            except Exception as e:
+                message = f"⚠️ Error reading file: {str(e)}"
+                logger.error(f"File read error: {e}")
         elif 'proxytext' in request.form:
             proxytext = request.form.get("proxytext", "")
             proxies = proxytext.strip().splitlines()
             message = "Checking pasted proxies..."
+            logger.info(f"Received {len(proxies)} proxies from text input")
 
         proxies = list(set(p.strip() for p in proxies if p.strip()))
         
@@ -205,6 +225,8 @@ def index():
             task_queue.append((task_id, proxies))
             task_status[task_id] = 'queued'
             position = queue_size + 1  # +1 because we just added this task
+            
+            logger.info(f"Created task {task_id} with {len(proxies)} proxies. Queue position: {position}")
             
             # Create a response object to set cookie
             response = make_response(render_template("index.html", message=message, results=None, task_id=task_id))
@@ -243,6 +265,7 @@ def queue_status():
         
     with task_queue_lock:
         status = task_status.get(task_id, 'not_found')
+        logger.info(f"Queue status request for task {task_id}: {status}")
         
         if status == 'processing':
             return jsonify({
