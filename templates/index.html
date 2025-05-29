@@ -102,7 +102,7 @@
 
     <script>
         let trackedProxies = new Set();
-        const MAX_LINES = 50;
+        const MAX_LINES = 50; // Client-side limit
 
         function limitProxyLines(textarea) {
             const lines = textarea.value.split('\n');
@@ -119,9 +119,9 @@
                 reader.onload = function(e) {
                     const lines = e.target.result.split('\n');
                     if (lines.length > MAX_LINES) {
-                        alert(`The uploaded file contains more than ${MAX_LINES} lines. Only the first ${MAX_LINES} lines will be processed.`);
-                        // Optionally disable submit button or trim the file content before submission
-                        // For now, we'll let the backend handle the trimming
+                        alert(`The uploaded file contains more than ${MAX_LINES} lines. Only the first ${MAX_LINES} lines will be processed by the server.`);
+                        // Note: Client-side file input cannot be directly trimmed before submission.
+                        // The server-side (app.py) will enforce the hard limit.
                     }
                 };
                 reader.readAsText(file);
@@ -178,6 +178,7 @@
         }
 
         {% if results %}
+        // Redirect to homepage after 5 minutes if results are shown
         setTimeout(function() {
             window.location.href = "/";
         }, 300000);
