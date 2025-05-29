@@ -12,7 +12,6 @@ import json
 import uuid
 from collections import deque
 from threading import Thread, Lock
-import queue
 
 app = Flask(__name__)
 
@@ -132,8 +131,10 @@ def process_proxies(proxies, task_id):
         task_status[task_id] = 'completed'
 
     # Clean up old tasks
+    current_time = time.time()
     for tid in list(task_status.keys()):
-        if task_status[tid] == 'completed' and (time.time() - float(tid.split('_')[0]) > 3600:  # 1 hour
+        # Check if task is completed and older than 1 hour
+        if task_status[tid] == 'completed' and (current_time - float(tid.split('_')[0])) > 3600:
             del task_status[tid]
             if tid in task_results:
                 del task_results[tid]
@@ -154,6 +155,9 @@ def task_worker():
                 process_proxies(proxies, current_task)
             except Exception as e:
                 print(f"Task processing error: {e}")
+                with task_queue_lock:
+                    task_status[current_task] = 'completed'
+                    task_results[current_task] = []
             finally:
                 with task_queue_lock:
                     current_task = None
