@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, send_from_directory, jsonify, redirect, url_for
+from flask import Flask, request, render_template, send_from_directory, jsonify, redirect, url_for, make_response
 import os
 import time
 import requests
@@ -205,8 +205,8 @@ def index():
             task_status[task_id] = 'queued'
             position = queue_size + 1  # +1 because we just added this task
             
-            # Set task_id as cookie so client can track it
-            response = render_template("index.html", message=message, results=None)
+            # Create a response object to set cookie
+            response = make_response(render_template("index.html", message=message, results=None))
             response.set_cookie('task_id', task_id)
             return response
 
@@ -227,8 +227,8 @@ def index():
         else:
             message = "⚠️ No good proxies found."
             
-        # Clear task cookie
-        response = render_template("index.html", results=results, message=message)
+        # Clear task cookie using a response object
+        response = make_response(render_template("index.html", results=results, message=message))
         response.set_cookie('task_id', '', expires=0)
         return response
 
