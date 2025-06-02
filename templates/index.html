@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Site Maintenance - Fix in Progress!</title>
+    <title>Site Maintenance - Critical Fix!</title>
     <style>
         body {
             font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
             background-color: #2c3e50; /* Dark blue/grey - dramatic background */
-            color: #ecf0f1; /* Light text for contrast on body if needed */
+            color: #ecf0f1;
             display: flex;
             justify-content: center;
             align-items: center;
@@ -17,47 +17,55 @@
             text-align: center;
             padding: 20px;
             box-sizing: border-box;
+            overflow: hidden;
         }
         .container {
-            background-color: #ffffff; /* White container for contrast */
-            color: #333; /* Dark text inside the container */
+            background-color: #ffffff;
+            color: #333;
             padding: 40px 50px;
             border-radius: 12px;
-            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25); /* More pronounced shadow */
-            max-width: 580px; /* Slightly wider if needed */
-            animation: fadeIn 0.5s ease-out; /* Subtle fade-in for the container */
+            border: 4px solid #e74c3c; /* Prominent Red Border */
+            box-shadow: 0 0 25px rgba(231, 76, 60, 0.5); /* Optional: Reddish glow shadow */
+            max-width: 580px;
+            animation: fadeInContainer 0.7s ease-out forwards;
         }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
+        @keyframes fadeInContainer {
+            from { opacity: 0; transform: scale(0.95) translateY(20px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
         }
         .icon {
-            font-size: 4.5em; /* Larger icon for more drama */
-            color: #e74c3c; /* A more urgent/dramatic color like red/orange */
+            font-size: 4.5em;
+            color: #e74c3c; /* Red/orange for alert */
             margin-bottom: 25px;
-            display: inline-block; /* Needed for transform/animation */
-            animation: rotateIcon 2.5s linear infinite; /* CSS animation for rotation */
+            display: inline-block;
+            animation:
+                rotateIcon 3s linear infinite,
+                flushIcon 0.8s ease-in-out infinite; /* Faster, more intense "flushing" */
         }
         @keyframes rotateIcon {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        @keyframes flushIcon { /* Renamed from pulseIcon and adjusted for intensity */
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.15; transform: scale(0.92); } /* Lower opacity, slightly more shrink */
+        }
         h1 {
-            color: #34495e; /* Darker, strong heading color */
-            font-size: 2.6em; /* Larger heading */
+            color: #34495e;
+            font-size: 2.6em;
             margin-bottom: 20px;
-            font-weight: 700; /* Bold heading */
+            font-weight: 700;
         }
         .message {
             font-size: 1.15em;
             line-height: 1.7;
-            color: #555; /* Standard text color within container */
+            color: #555;
             margin-bottom: 30px;
         }
         .footer {
             margin-top: 35px;
             font-size: 0.9em;
-            color: #7f8c8d; /* Muted footer text color */
+            color: #7f8c8d;
         }
     </style>
 </head>
@@ -66,10 +74,10 @@
         <div class="icon">&#x1F6E0;&#xFE0F;</div> <h1>Getting a Quick! Fix</h1>
         <p class="message">
             Hi there! I'm currently fixing a problem.
-            It seems like a dead end  for now.<p class="message">
-                 Updates soon.
-                </p>
-    
+            It seems like a dead end for now... 
+            <p class="message">
+            updates soon.
+        </p>
         <div class="footer">
             &copy; proxy-checker-app.onrender.com
         </div>
