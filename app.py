@@ -1,51 +1,38 @@
 from flask import Flask, request, render_template, send_from_directory, jsonify, redirect, url_for
 import os
+import time
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend for Matplotlib
 import matplotlib.pyplot as plt
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
+import random
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from requests.packages.urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-# --- Configuration Constants ---
 GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 PROXY_LOG_FILE = "proxy_log.txt"
-MAX_WORKERS = 25  # Reduced for better resource management on typical hosts
-REQUEST_TIMEOUT = 5 # Slightly increased timeout
+MAX_WORKERS = 8  # Reduced concurrency to avoid rate limiting
+REQUEST_TIMEOUT = 8  # Increased timeout
 PROXY_CHECK_HARD_LIMIT = 50
+MIN_DELAY = 0.5  # Minimum delay between requests in seconds
+MAX_DELAY = 2.5  # Maximum delay between requests in seconds
 
-# --- Resilient Requests Session Setup (Implements Retries) ---
-# This creates a single, reusable session for all requests.
-session = requests.Session()
+# User agents to rotate
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/118.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+]
 
-# Define the retry strategy
-# Total retries=3, backoff_factor adds a delay between retries (e.g., 0.3s, 0.6s, 1.2s)
-# status_forcelist will cause retries on 5xx server errors.
-retry_strategy = Retry(
-    total=3,
-    status_forcelist=[429, 500, 502, 503, 504],
-    backoff_factor=0.3
-)
-
-# Mount the strategy to the session
-adapter = HTTPAdapter(max_retries=retry_strategy)
-session.mount("http://", adapter)
-session.mount("https://", adapter)
-
-# --- Human-like Headers ---
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-}
-
-# --- Google Sheets Configuration ---
+# Google Sheets config
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
 def get_gsheet_client():
@@ -61,38 +48,28 @@ def get_sheet():
     return client.open("UsedIPs").sheet1
 
 def append_used_ip(ip, proxy):
-    try:
-        sheet = get_sheet()
-        sheet.append_row([ip, proxy, str(datetime.datetime.utcnow())])
-    except Exception as e:
-        print(f"❌ Failed to append to Google Sheet: {e}")
+    sheet = get_sheet()
+    sheet.append_row([ip, proxy, str(datetime.datetime.utcnow())])
 
 def is_ip_used(ip):
     try:
         sheet = get_sheet()
         ips = sheet.col_values(1)
         return ip in ips
-    except Exception as e:
-        print(f"❌ Failed to check Google Sheet: {e}")
+    except:
         return False
 
 def remove_ip(ip):
-    try:
-        sheet = get_sheet()
-        cell = sheet.find(ip)
-        if cell:
-            sheet.delete_rows(cell.row)
-    except Exception as e:
-        print(f"❌ Failed to remove IP from Google Sheet: {e}")
-
+    sheet = get_sheet()
+    records = sheet.get_all_records()
+    for i, row in enumerate(records):
+        if row.get("IP") == ip:
+            sheet.delete_rows(i + 2)
+            break
 
 def list_used_ips():
-    try:
-        sheet = get_sheet()
-        return sheet.get_all_records()
-    except Exception as e:
-        print(f"❌ Failed to list IPs from Google Sheet: {e}")
-        return []
+    sheet = get_sheet()
+    return sheet.get_all_records()
 
 def list_good_proxies():
     if not os.path.exists(GOOD_PROXIES_FILE):
@@ -107,19 +84,65 @@ def get_ip_from_proxy(proxy):
             "http": f"http://{user}:{pw}@{host}:{port}",
             "https": f"http://{user}:{pw}@{host}:{port}",
         }
-        # Use the global session with retry logic
-        ip = session.get("https://api.ipify.org", proxies=proxies, timeout=REQUEST_TIMEOUT, headers=HEADERS).text
+        
+        # Create session with retries
+        session = requests.Session()
+        retries = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[500, 502, 503, 504]
+        )
+        session.mount('http://', HTTPAdapter(max_retries=retries))
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+        
+        ip = session.get(
+            "https://api.ipify.org", 
+            proxies=proxies, 
+            timeout=REQUEST_TIMEOUT,
+            headers={"User-Agent": random.choice(USER_AGENTS)}
+        ).text
         return ip
     except Exception as e:
-        # This will catch the final error after all retries have failed
         print(f"❌ Failed to get IP from proxy {proxy}: {e}")
         return None
 
-def get_fraud_score(ip):
+def get_fraud_score(ip, proxy_line):
     try:
+        # Parse proxy details
+        host, port, user, pw = proxy_line.strip().split(":")
+        proxy_url = f"http://{user}:{pw}@{host}:{port}"
+        proxies = {
+            "http": proxy_url,
+            "https": proxy_url,
+        }
+        
+        # Create session with retries
+        session = requests.Session()
+        retries = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504]
+        )
+        session.mount('http://', HTTPAdapter(max_retries=retries))
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+        
         url = f"https://scamalytics.com/ip/{ip}"
-        # Use the global session with retry logic and human-like headers
-        response = session.get(url, timeout=REQUEST_TIMEOUT, headers=HEADERS)
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Cache-Control": "max-age=0"
+        }
+        
+        response = session.get(
+            url,
+            headers=headers,
+            proxies=proxies,
+            timeout=REQUEST_TIMEOUT
+        )
+        
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             score_div = soup.find('div', class_='score')
@@ -127,16 +150,18 @@ def get_fraud_score(ip):
                 score_text = score_div.text.strip().split(":")[1].strip()
                 return int(score_text)
     except Exception as e:
-        # This will catch the final error after all retries have failed
         print(f"⚠️ Error checking Scamalytics for {ip}: {e}")
     return None
 
 def single_check_proxy(proxy_line):
+    # Random delay to space out requests
+    time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+    
     ip = get_ip_from_proxy(proxy_line)
     if not ip:
         return None
 
-    score = get_fraud_score(ip)
+    score = get_fraud_score(ip, proxy_line)
     if score == 0:
         return {"proxy": proxy_line, "ip": ip}
     return None
@@ -154,21 +179,25 @@ def index():
 
         if 'proxyfile' in request.files and request.files['proxyfile'].filename:
             file = request.files['proxyfile']
-            all_lines = file.read().decode("utf-8", errors="ignore").strip().splitlines()
+            all_lines = file.read().decode("utf-8").strip().splitlines()
+            input_count = len(all_lines)
+            if input_count > PROXY_CHECK_HARD_LIMIT:
+                truncation_warning = f" Only the first {PROXY_CHECK_HARD_LIMIT} proxies were processed."
+                all_lines = all_lines[:PROXY_CHECK_HARD_LIMIT]
+            proxies = all_lines
         elif 'proxytext' in request.form:
             proxytext = request.form.get("proxytext", "")
             all_lines = proxytext.strip().splitlines()
+            input_count = len(all_lines)
+            if input_count > PROXY_CHECK_HARD_LIMIT:
+                truncation_warning = f" Only the first {PROXY_CHECK_HARD_LIMIT} proxies were processed."
+                all_lines = all_lines[:PROXY_CHECK_HARD_LIMIT]
+            proxies = all_lines
 
-        input_count = len(all_lines)
-        if input_count > PROXY_CHECK_HARD_LIMIT:
-            truncation_warning = f" Only the first {PROXY_CHECK_HARD_LIMIT} proxies were processed."
-            all_lines = all_lines[:PROXY_CHECK_HARD_LIMIT]
-        
-        proxies = list(set(p.strip() for p in all_lines if p.strip()))
+        proxies = list(set(p.strip() for p in proxies if p.strip()))
         processed_count = len(proxies)
 
         if proxies:
-            # The ThreadPoolExecutor already provides controlled concurrency
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = [executor.submit(single_check_proxy, proxy) for proxy in proxies]
                 for future in as_completed(futures):
@@ -196,10 +225,9 @@ def index():
             else:
                 message = f"⚠️ Processed {processed_count} proxies ({input_count} submitted). No good proxies found.{truncation_warning}"
         else:
-            message = "⚠️ No valid proxies provided."
+            message = f"⚠️ No valid proxies provided. Submitted {input_count} lines, but none were valid proxy formats."
 
     return render_template("index.html", results=results, message=message)
-
 
 @app.route("/track-used", methods=["POST"])
 def track_used():
@@ -228,23 +256,18 @@ def admin():
                 line = line.strip()
                 if line:
                     logs.append(line)
-                    try:
-                        date_str, count_str = line.split(",")
-                        count = int(count_str.split()[0])
-                        daily_data[date_str] = daily_data.get(date_str, 0) + count
-                    except ValueError:
-                        print(f"Could not parse log line: {line}")
+                    date_str, count_str = line.split(",")
+                    count = int(count_str.split()[0])
+                    daily_data[date_str] = daily_data.get(date_str, 0) + count
 
     stats["total_checks"] = len(logs)
-    stats["total_good"] = sum(daily_data.values())
+    stats["total_good"] = sum(int(line.split(",")[1].split()[0]) for line in logs)
 
     if daily_data:
-        # Sort data by date for a proper graph
-        sorted_dates = sorted(daily_data.keys(), key=lambda d: datetime.datetime.strptime(d, '%Y-%m-%d'))
-        counts = [daily_data[d] for d in sorted_dates]
-        
+        dates = list(daily_data.keys())
+        counts = list(daily_data.values())
         plt.figure(figsize=(10, 4))
-        plt.plot(sorted_dates, counts, marker="o", color="green")
+        plt.plot(dates, counts, marker="o", color="green")
         plt.title("Good Proxies per Day")
         plt.xlabel("Date")
         plt.ylabel("Count")
@@ -259,11 +282,9 @@ def admin():
     good_proxies = list_good_proxies()
     return render_template("admin.html", logs=logs, stats=stats, graph_url="/static/proxy_stats.png", used_ips=used_ips, good_proxies=good_proxies)
 
-
 @app.route('/static/<path:path>')
 def send_static(path):
     return send_from_directory('static', path)
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
