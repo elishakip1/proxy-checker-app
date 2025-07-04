@@ -45,7 +45,7 @@ def get_gsheet_client():
 
 def get_sheet():
     client = get_gsheet_client()
-    return client.open("UsedIPs").sheet1
+    return client.open("Used IPs").sheet1
 
 def append_used_ip(ip, proxy):
     sheet = get_sheet()
