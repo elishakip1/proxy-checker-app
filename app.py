@@ -20,10 +20,10 @@ LOW_SCORE_PROXIES_FILE = "low_score_proxies.txt"
 PROXY_LOG_FILE = "proxy_log.txt"
 MAX_WORKERS = 8  # Reduced concurrency to avoid rate limiting
 REQUEST_TIMEOUT = 8  # Increased timeout
-PROXY_CHECK_HARD_LIMIT = 50
+PROXY_CHECK_HARD_LIMIT = 500
 MIN_DELAY = 0.5  # Minimum delay between requests in seconds
 MAX_DELAY = 2.5  # Maximum delay between requests in seconds
-MAX_ACCEPTABLE_FRAUD_SCORE = 8 # New constant for clarity
+MAX_ACCEPTABLE_FRAUD_SCORE = 100 # New constant for clarity
 
 # User agents to rotate
 USER_AGENTS = [
