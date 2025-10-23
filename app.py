@@ -15,13 +15,15 @@ from requests.packages.urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-GOOD_PROXIES_FILE = "zero_score_proxies.txt"
+# Renamed file and variables to reflect score <= 8 (not just zero)
+LOW_SCORE_PROXIES_FILE = "low_score_proxies.txt"
 PROXY_LOG_FILE = "proxy_log.txt"
 MAX_WORKERS = 8  # Reduced concurrency to avoid rate limiting
 REQUEST_TIMEOUT = 8  # Increased timeout
 PROXY_CHECK_HARD_LIMIT = 50
 MIN_DELAY = 0.5  # Minimum delay between requests in seconds
 MAX_DELAY = 2.5  # Maximum delay between requests in seconds
+MAX_ACCEPTABLE_FRAUD_SCORE = 8 # New constant for clarity
 
 # User agents to rotate
 USER_AGENTS = [
@@ -71,10 +73,11 @@ def list_used_ips():
     sheet = get_sheet()
     return sheet.get_all_records()
 
-def list_good_proxies():
-    if not os.path.exists(GOOD_PROXIES_FILE):
+# Renamed function
+def list_low_score_proxies():
+    if not os.path.exists(LOW_SCORE_PROXIES_FILE):
         return []
-    with open(GOOD_PROXIES_FILE, "r") as f:
+    with open(LOW_SCORE_PROXIES_FILE, "r") as f:
         return [line.strip() for line in f if line.strip()]
 
 def get_ip_from_proxy(proxy):
@@ -162,8 +165,11 @@ def single_check_proxy(proxy_line):
         return None
 
     score = get_fraud_score(ip, proxy_line)
-    if score == 0:
+    
+    # *** MODIFIED LOGIC: Check if score is 8 or less ***
+    if score is not None and score <= MAX_ACCEPTABLE_FRAUD_SCORE:
         return {"proxy": proxy_line, "ip": ip}
+    
     return None
 
 @app.route("/", methods=["GET", "POST"])
@@ -210,7 +216,8 @@ def index():
                         })
 
             if results:
-                with open(GOOD_PROXIES_FILE, "w") as out:
+                # Updated file name here
+                with open(LOW_SCORE_PROXIES_FILE, "w") as out:
                     for item in results:
                         if not item["used"]:
                             out.write(item["proxy"] + "\n")
@@ -221,9 +228,10 @@ def index():
                 good_count = len([r for r in results if not r['used']])
                 used_count = len([r for r in results if r['used']])
                 
-                message = f"✅ Processed {processed_count} proxies ({input_count} submitted). Found {good_count} good proxies ({used_count} used).{truncation_warning}"
+                # Updated message to reflect the new criteria
+                message = f"✅ Processed {processed_count} proxies ({input_count} submitted). Found {good_count} proxies with score <= {MAX_ACCEPTABLE_FRAUD_SCORE} ({used_count} used).{truncation_warning}"
             else:
-                message = f"⚠️ Processed {processed_count} proxies ({input_count} submitted). No good proxies found.{truncation_warning}"
+                message = f"⚠️ Processed {processed_count} proxies ({input_count} submitted). No low-score proxies found.{truncation_warning}"
         else:
             message = f"⚠️ No valid proxies provided. Submitted {input_count} lines, but none were valid proxy formats."
 
@@ -268,7 +276,7 @@ def admin():
         counts = list(daily_data.values())
         plt.figure(figsize=(10, 4))
         plt.plot(dates, counts, marker="o", color="green")
-        plt.title("Good Proxies per Day")
+        plt.title("Low-Score Proxies per Day (Score <= 8)") # Updated title
         plt.xlabel("Date")
         plt.ylabel("Count")
         plt.xticks(rotation=45)
@@ -279,7 +287,7 @@ def admin():
         plt.close()
 
     used_ips = list_used_ips()
-    good_proxies = list_good_proxies()
+    good_proxies = list_low_score_proxies() # Updated function call
     return render_template("admin.html", logs=logs, stats=stats, graph_url="/static/proxy_stats.png", used_ips=used_ips, good_proxies=good_proxies)
 
 @app.route('/static/<path:path>')
