@@ -7,8 +7,6 @@ services:
       pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_KEY
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
         sync: false
     plan: free
