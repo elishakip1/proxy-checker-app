@@ -15,15 +15,13 @@ from requests.packages.urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-# --- Configuration Changes for Render Memory/Performance ---
-LOW_SCORE_PROXIES_FILE = "low_score_proxies.txt"
+GOOD_PROXIES_FILE = "zero_score_proxies.txt"
 PROXY_LOG_FILE = "proxy_log.txt"
-MAX_WORKERS = 4  # REDUCED from 8 to 4 to save memory and avoid SIGKILL
-REQUEST_TIMEOUT = 8
+MAX_WORKERS = 8  # Reduced concurrency to avoid rate limiting
+REQUEST_TIMEOUT = 8  # Increased timeout
 PROXY_CHECK_HARD_LIMIT = 50
-MIN_DELAY = 0.5
-MAX_DELAY = 2.5
-MAX_ACCEPTABLE_FRAUD_SCORE = 8 # New constant for the fraud score threshold
+MIN_DELAY = 0.5  # Minimum delay between requests in seconds
+MAX_DELAY = 2.5  # Maximum delay between requests in seconds
 
 # User agents to rotate
 USER_AGENTS = [
@@ -40,7 +38,6 @@ SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 def get_gsheet_client():
     json_creds = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     if not json_creds:
-        # NOTE: This error will cause a crash loop if GOOGLE_SERVICE_ACCOUNT_JSON is missing on Render.
         raise ValueError("Missing GOOGLE_SERVICE_ACCOUNT_JSON environment variable.")
     creds_dict = json.loads(json_creds)
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
@@ -48,8 +45,7 @@ def get_gsheet_client():
 
 def get_sheet():
     client = get_gsheet_client()
-    # Ensure this sheet name "Used IPs" exactly matches your sheet
-    return client.open("Used IPs").sheet1
+    return client.open("UsedIPs").sheet1
 
 def append_used_ip(ip, proxy):
     sheet = get_sheet()
@@ -60,28 +56,25 @@ def is_ip_used(ip):
         sheet = get_sheet()
         ips = sheet.col_values(1)
         return ip in ips
-    except Exception as e:
-        print(f"Error checking IP usage in sheet: {e}")
+    except:
         return False
 
 def remove_ip(ip):
     sheet = get_sheet()
     records = sheet.get_all_records()
     for i, row in enumerate(records):
-        # Assumes the first column header is 'IP'
         if row.get("IP") == ip:
-            sheet.delete_rows(i + 2) # Row index is 1-based, +1 for header
+            sheet.delete_rows(i + 2)
             break
 
 def list_used_ips():
     sheet = get_sheet()
     return sheet.get_all_records()
 
-# Renamed function
-def list_low_score_proxies():
-    if not os.path.exists(LOW_SCORE_PROXIES_FILE):
+def list_good_proxies():
+    if not os.path.exists(GOOD_PROXIES_FILE):
         return []
-    with open(LOW_SCORE_PROXIES_FILE, "r") as f:
+    with open(GOOD_PROXIES_FILE, "r") as f:
         return [line.strip() for line in f if line.strip()]
 
 def get_ip_from_proxy(proxy):
@@ -169,11 +162,8 @@ def single_check_proxy(proxy_line):
         return None
 
     score = get_fraud_score(ip, proxy_line)
-    
-    # *** MODIFIED LOGIC: Check if score is 8 or less ***
-    if score is not None and score <= MAX_ACCEPTABLE_FRAUD_SCORE:
+    if score == 0:
         return {"proxy": proxy_line, "ip": ip}
-    
     return None
 
 @app.route("/", methods=["GET", "POST"])
@@ -220,8 +210,7 @@ def index():
                         })
 
             if results:
-                # Updated file name here
-                with open(LOW_SCORE_PROXIES_FILE, "w") as out:
+                with open(GOOD_PROXIES_FILE, "w") as out:
                     for item in results:
                         if not item["used"]:
                             out.write(item["proxy"] + "\n")
@@ -232,10 +221,9 @@ def index():
                 good_count = len([r for r in results if not r['used']])
                 used_count = len([r for r in results if r['used']])
                 
-                # Updated message to reflect the new criteria
-                message = f"✅ Processed {processed_count} proxies ({input_count} submitted). Found {good_count} proxies with score <= {MAX_ACCEPTABLE_FRAUD_SCORE} ({used_count} used).{truncation_warning}"
+                message = f"✅ Processed {processed_count} proxies ({input_count} submitted). Found {good_count} good proxies ({used_count} used).{truncation_warning}"
             else:
-                message = f"⚠️ Processed {processed_count} proxies ({input_count} submitted). No low-score proxies found.{truncation_warning}"
+                message = f"⚠️ Processed {processed_count} proxies ({input_count} submitted). No good proxies found.{truncation_warning}"
         else:
             message = f"⚠️ No valid proxies provided. Submitted {input_count} lines, but none were valid proxy formats."
 
@@ -280,7 +268,7 @@ def admin():
         counts = list(daily_data.values())
         plt.figure(figsize=(10, 4))
         plt.plot(dates, counts, marker="o", color="green")
-        plt.title(f"Low-Score Proxies per Day (Score <= {MAX_ACCEPTABLE_FRAUD_SCORE})") # Updated title
+        plt.title("Good Proxies per Day")
         plt.xlabel("Date")
         plt.ylabel("Count")
         plt.xticks(rotation=45)
@@ -288,17 +276,15 @@ def admin():
         if not os.path.exists("static"):
             os.makedirs("static")
         plt.savefig("static/proxy_stats.png")
-        plt.close() # Crucial: releases memory from Matplotlib plot
+        plt.close()
 
     used_ips = list_used_ips()
-    good_proxies = list_low_score_proxies() # Updated function call
+    good_proxies = list_good_proxies()
     return render_template("admin.html", logs=logs, stats=stats, graph_url="/static/proxy_stats.png", used_ips=used_ips, good_proxies=good_proxies)
 
 @app.route('/static/<path:path>')
 def send_static(path):
     return send_from_directory('static', path)
 
-# This __name__ == "__main__" block is ignored by Gunicorn on Render, 
-# but kept for local testing.
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
