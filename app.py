@@ -101,9 +101,12 @@ def get_ip_from_proxy(proxy_line, allowed_passwords):
         
     try:
         host, port, user, pw = proxy_line.strip().split(":")
+        
+        # *** FIX APPLIED HERE ***
+        # Use https:// for the https proxy definition
         proxies = {
             "http": f"http://{user}:{pw}@{host}:{port}",
-            "https": f"http://{user}:{pw}@{host}:{port}",
+            "https": f"https://{user}:{pw}@{host}:{port}",
         }
         
         session = requests.Session()
@@ -133,10 +136,14 @@ def get_fraud_score(ip, proxy_line, allowed_passwords):
         
     try:
         host, port, user, pw = proxy_line.strip().split(":")
-        proxy_url = f"http://{user}:{pw}@{host}:{port}"
+
+        # *** FIX APPLIED HERE ***
+        # Define separate http and https proxy URLs
+        proxy_url_http = f"http://{user}:{pw}@{host}:{port}"
+        proxy_url_https = f"https://{user}:{pw}@{host}:{port}"
         proxies = {
-            "http": proxy_url,
-            "https": proxy_url,
+            "http": proxy_url_http,
+            "https": proxy_url_https,
         }
         
         session = requests.Session()
