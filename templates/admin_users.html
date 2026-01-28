@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>User Activity</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  
+  <link rel="icon" href="{{ url_for('static', filename='img/favicon.ico') }}" type="image/x-icon">
+  <link rel="shortcut icon" href="{{ url_for('static', filename='img/favicon.ico') }}" type="image/x-icon">
+
+  <style>
+    body { background-color: #f0f2f5; font-family: sans-serif; }
+    /* Sidebar Styles */
+    .sidebar { min-height: 100vh; width: 250px; background: #212529; color: #fff; position: fixed; top: 0; left: 0; z-index: 1000; padding-top: 20px; transition: all 0.3s; }
+    .sidebar-header { padding: 20px; text-align: center; border-bottom: 1px solid #495057; }
+    
+    .logo-link {
+      display: inline-block;
+      text-decoration: none;
+      margin-bottom: 15px;
+      background-color: white;
+      border-radius: 50%;
+      padding: 5px;
+    }
+    
+    .logo-link img {
+      height: 70px;
+      width: 70px;
+      border-radius: 50%;
+      object-fit: cover;
+      transition: opacity 0.2s ease;
+      display: block;
+    }
+    
+    .logo-link:hover img {
+      opacity: 0.9;
+    }
+    
+    .sidebar-nav { list-style: none; padding: 0; margin-top: 20px; }
+    .sidebar-nav li { width: 100%; }
+    .nav-link { display: block; padding: 15px 20px; color: rgba(255,255,255,.75); text-decoration: none; border-left: 4px solid transparent; }
+    .nav-link:hover, .nav-link.active-nav { color: #fff; background: rgba(255,255,255,.1); border-left-color: #0d6efd; }
+    .content-wrapper { margin-left: 250px; padding: 30px; }
+    @media (max-width: 768px) { .sidebar { margin-left: -250px; } .sidebar.active { margin-left: 0; } .content-wrapper { margin-left: 0; } }
+  </style>
+</head>
+<body>
+
+<nav class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+        <!-- CLICKABLE LOGO WITH WHITE BACKGROUND -->
+        <a href="{{ url_for('index') }}" class="logo-link">
+            <img src="https://i.ibb.co/pjSD084t/proxychecker-logo-clear.png" alt="Proxy Checker Logo">
+        </a>
+        <h5 class="text-white mt-2">Admin Panel</h5>
+    </div>
+    <ul class="sidebar-nav">
+        <li><a href="{{ url_for('admin') }}" class="nav-link">📊 Dashboard</a></li>
+        <li><a href="{{ url_for('admin_pool') }}" class="nav-link">🏭 Proxy Pool</a></li>
+        <li><a href="{{ url_for('admin_users') }}" class="nav-link active-nav">👥 User Activity</a></li>
+        <li><a href="{{ url_for('admin_logs') }}" class="nav-link">📋 System Logs</a></li>
+        <li><a href="{{ url_for('admin_settings') }}" class="nav-link">⚙️ Settings</a></li>
+        <li class="mt-5"><a href="/" class="nav-link text-warning">← Back to Checker</a></li>
+    </ul>
+</nav>
+
+<div class="content-wrapper">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <button class="btn btn-dark d-md-none" id="sidebarToggle">☰ Menu</button>
+        <h2>👥 User Activity Monitor</h2>
+    </div>
+
+    <div class="card">
+        <div class="card-header bg-secondary text-white">User Statistics</div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Username</th>
+                            <th>Status</th>
+                            <th>Last Active</th>
+                            <th>Total Sessions</th>
+                            <th>API Checks</th>
+                            <th>Good Proxies</th>
+                            <th>Last Known IP</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for user in stats %}
+                        <tr>
+                            <td class="fw-bold">{{ user.username }}</td>
+                            <td>
+                                {% if user.status == 'Active' %}
+                                    <span class="badge bg-success">Active</span>
+                                {% elif user.status == 'Offline' %}
+                                    <span class="badge bg-warning text-dark">Offline (>24h)</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">Inactive (>7d)</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ user.last_active | replace('T', ' ') | truncate(19, True, '') }}</td>
+                            <td>{{ user.total_sessions }}</td>
+                            <td>{{ user.total_api_calls }}</td>
+                            <td class="text-success fw-bold">{{ user.total_good_proxies }}</td>
+                            <td class="small text-muted">{{ user.last_ip }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="7" class="text-center">No activity logs found yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    document.getElementById('sidebarToggle').addEventListener('click', function() {
+        document.getElementById('sidebar').classList.toggle('active');
+    });
+</script>
+</body>
+</html>
