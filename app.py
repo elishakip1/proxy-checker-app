@@ -62,15 +62,15 @@ class User(UserMixin):
     def is_guest(self):
         return self.role == "guest"
 
-# Updated users as requested
+# Initialize users dictionary - NO GLOBAL DECLARATION NEEDED AT MODULE LEVEL
 users = {
     1: User(id=1, username="EL", password="ADMIN123", role="admin", can_fetch=True),
     2: User(id=2, username="Work2", password="password", role="user", can_fetch=True),
-    #4: User(id=3, username="STONES", password="123STONES", role="guest", can_fetch=False),
 }
 
 @login_manager.user_loader
 def load_user(user_id):
+    # No need for global declaration here as we're only reading, not modifying
     return users.get(int(user_id))
 
 def admin_required(f):
@@ -381,6 +381,7 @@ def login():
         return redirect(url_for('admin') if current_user.is_admin else url_for('index'))
     error = None
     if request.method == 'POST':
+        # No global users needed here - just reading from module-level variable
         user = next((u for u in users.values() if u.username == request.form.get('username')), None)
         if user and user.password == request.form.get('password'):
             login_user(user, remember=(request.form.get('remember') == 'on'))
