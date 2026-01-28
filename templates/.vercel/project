@@ -1,2 +1,0 @@
-mkdir -p .vercel
-echo '{"projectId":"vproxy-console","orgId":"your-org-id"}' > .vercel/project.json
