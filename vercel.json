@@ -1,0 +1,36 @@
+{
+  "builds": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python",
+      "config": {
+        "runtime": "python3.11",
+        "maxLambdaSize": "15mb",
+        "includeFiles": [
+          "templates/**",
+          "static/**",
+          "*.py",
+          "requirements.txt",
+          "runtime.txt"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/static/(.*)",
+      "headers": {
+        "Cache-Control": "public, max-age=31536000"
+      },
+      "dest": "/static/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "app.py"
+    }
+  ],
+  "env": {
+    "PYTHONUNBUFFERED": "1",
+    "FLASK_ENV": "production"
+  }
+}
